@@ -1,0 +1,61 @@
+services:
+  database:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${DB_NAME:-carebridge_ai}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/database/schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
+      - ./backend/database/migrations/20260910_add_reset_authorization.sql:/docker-entrypoint-initdb.d/002_reset_authorization.sql:ro
+      - ./backend/database/migrations/20260910_create_medical_documents.sql:/docker-entrypoint-initdb.d/003_medical_documents.sql:ro
+      - ./backend/database/migrations/20260911_add_document_processing_metadata.sql:/docker-entrypoint-initdb.d/004_document_processing_metadata.sql:ro
+      - ./backend/database/migrations/20260912_create_verified_care_plans.sql:/docker-entrypoint-initdb.d/005_verified_care_plans.sql:ro
+      - ./backend/database/migrations/20260912_add_role_rbac.sql:/docker-entrypoint-initdb.d/006_role_rbac.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      PORT: 5000
+      DB_HOST: database
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-carebridge_ai}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-1d}
+      EMAIL_USER: ${EMAIL_USER:-}
+      EMAIL_PASS: ${EMAIL_PASS:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_BASE_URL: ${AI_BASE_URL:-https://api.openai.com/v1}
+      AI_MODEL: ${AI_MODEL:-gpt-4o-mini}
+    ports:
+      - "${BACKEND_PORT:-5000}:5000"
+    depends_on:
+      database:
+        condition: service_healthy
+    volumes:
+      - private_uploads:/app/private_uploads
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:5000}
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  private_uploads:
