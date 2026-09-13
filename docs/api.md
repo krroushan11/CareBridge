@@ -50,13 +50,15 @@ Returns a JWT and safe user fields.
 
 - `GET /api/auth/profile` — authenticated user's profile.
 - `PUT /api/auth/profile` — update the authenticated user's name or email.
-- `PUT /api/auth/change-password` — change the authenticated user's password.
+- `PUT /api/auth/change-password` — change the authenticated user's password. Requires
+  `currentPassword`, `newPassword`, and matching `confirmPassword`.
 
 ### Password reset
 
 - `POST /api/auth/forgot-password` — request an email OTP.
 - `POST /api/auth/verify-reset-otp` — verify the OTP and receive a short-lived reset token.
 - `POST /api/auth/reset-password` — reset the password with the reset token.
+  Requires matching `newPassword` and `confirmPassword`.
 
 ### Admin role management
 

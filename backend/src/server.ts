@@ -5,8 +5,16 @@ import { pool } from "./config/database";
 import analysisRoutes from "./routes/analysisRoutes";
 import authRoutes from "./routes/authRoutes";
 import documentRoutes from "./routes/documentRoutes";
+import { validateJwtSecret } from "./middlewares/authMiddleware";
 
 dotenv.config();
+
+try {
+  validateJwtSecret();
+} catch (error) {
+  console.error("Authentication configuration error");
+  process.exit(1);
+}
 
 const app = express();
 

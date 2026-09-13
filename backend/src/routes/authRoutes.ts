@@ -38,11 +38,33 @@ const verifyResetOTPLimiter = rateLimit({
   }
 });
 
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: "Too many login attempts. Please try again later"
+  }
+});
+
+const registrationLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: "Too many registration attempts. Please try again later"
+  }
+});
+
 // Register user
-router.post("/register", register);
+router.post("/register", registrationLimiter, register);
 
 // Login user
-router.post("/login", login);
+router.post("/login", loginLimiter, login);
 
 // Protected Profile Route
 router.get("/profile", authenticateToken, getProfile);

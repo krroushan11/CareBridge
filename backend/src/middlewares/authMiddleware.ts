@@ -18,6 +18,23 @@ export interface AuthRequest extends Request {
   user?: AuthenticatedUser;
 }
 
+export const getJwtSecret = (): string | undefined => {
+  const secret = process.env.JWT_SECRET;
+  return secret && secret.trim().length > 0 ? secret : undefined;
+};
+
+export const validateJwtSecret = (): void => {
+  const secret = getJwtSecret();
+
+  if (
+    !secret ||
+    secret.length < 32 ||
+    /replace-with|change-this|your-secret|secret-key/i.test(secret)
+  ) {
+    throw new Error("JWT_SECRET must be a unique random value of at least 32 characters");
+  }
+};
+
 export const authenticateToken = (
   req: AuthRequest,
   res: Response,
@@ -42,7 +59,7 @@ export const authenticateToken = (
       });
     }
 
-    const jwtSecret = process.env.JWT_SECRET;
+    const jwtSecret = getJwtSecret();
 
     if (!jwtSecret) {
       return res.status(500).json({
@@ -51,7 +68,7 @@ export const authenticateToken = (
       });
     }
 
-    const decoded = jwt.verify(token, jwtSecret);
+    const decoded = jwt.verify(token, jwtSecret, { algorithms: ["HS256"] });
 
     if (
       typeof decoded !== "object" ||

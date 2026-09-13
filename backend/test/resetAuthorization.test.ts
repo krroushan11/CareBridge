@@ -111,6 +111,7 @@ test("rejects an invalid reset authorization token", async () => {
       body: {
         email: "user@example.com",
         newPassword: "new-password",
+        confirmPassword: "new-password",
         resetToken: "invalid-token",
       },
     } as any,
@@ -135,6 +136,7 @@ test("rejects an expired reset authorization token", async () => {
       body: {
         email: "user@example.com",
         newPassword: "new-password",
+        confirmPassword: "new-password",
         resetToken: "expired-token",
       },
     } as any,
@@ -162,6 +164,7 @@ test("consumes a reset authorization token so replay fails", async () => {
   const body = {
     email: "user@example.com",
     newPassword: "new-password",
+    confirmPassword: "new-password",
     resetToken: "valid-token",
   };
 
@@ -191,6 +194,7 @@ test("allows only one concurrent reset authorization consumption", async () => {
   const body = {
     email: "user@example.com",
     newPassword: "new-password",
+    confirmPassword: "new-password",
     resetToken: "valid-token",
   };
 

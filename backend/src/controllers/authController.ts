@@ -4,16 +4,60 @@ import jwt from "jsonwebtoken";
 import { pool } from "../config/database";
 import crypto from "crypto";
 import { sendOTPEmail } from "../services/emailService";
-import { isUserRole, UserRole } from "../middlewares/authMiddleware";
+import { AuthRequest, getJwtSecret, isUserRole, UserRole } from "../middlewares/authMiddleware";
 import { z } from "zod";
 
-const passwordSchema = z.string().min(8).max(128);
-const emailSchema = z.string().trim().email().max(150);
+const passwordSchema = z
+  .string()
+  .min(8)
+  .max(128)
+  .refine((value) => /\S/.test(value), "Password cannot be whitespace only")
+  .refine((value) => !/[\u0000-\u001f\u007f]/.test(value), "Password contains invalid characters");
+const emailSchema = z.string().trim().max(150).email().transform((value) => value.toLowerCase());
+const otpSchema = z.string().regex(/^\d{6}$/, "OTP must be exactly 6 digits");
+const resetTokenSchema = z.string().min(1).max(256);
 const registrationSchema = z.object({
   name: z.string().trim().min(1).max(100),
   email: emailSchema,
   password: passwordSchema,
 });
+const loginSchema = z.object({
+  email: emailSchema,
+  password: passwordSchema,
+}).strict();
+const profileSchema = z.object({
+  name: z.string().trim().min(1).max(100).optional(),
+  email: emailSchema.optional(),
+}).strict().refine((value) => value.name !== undefined || value.email !== undefined, {
+  message: "At least one profile field is required",
+});
+const passwordChangeSchema = z.object({
+  currentPassword: passwordSchema,
+  newPassword: passwordSchema,
+  confirmPassword: passwordSchema,
+}).strict().refine(
+  (value) => value.confirmPassword === value.newPassword,
+  { message: "Password confirmation does not match" }
+);
+const resetRequestSchema = z.object({
+  email: emailSchema,
+}).strict();
+const otpVerificationSchema = z.object({
+  email: emailSchema,
+  otp: otpSchema,
+}).strict();
+const resetPasswordSchema = z.object({
+  email: emailSchema,
+  newPassword: passwordSchema,
+  confirmPassword: passwordSchema,
+  resetToken: resetTokenSchema.optional(),
+}).strict().refine(
+  (value) => value.confirmPassword === value.newPassword,
+  { message: "Password confirmation does not match" }
+);
+
+const invalidInput = (res: Response, message: string) =>
+  res.status(400).json({ success: false, message });
 
 // REGISTER USER
 export const register = async (req: Request, res: Response) => {
@@ -50,7 +94,7 @@ export const register = async (req: Request, res: Response) => {
       `INSERT INTO users (name, email, password, role)
        VALUES ($1, $2, $3, 'patient')
        RETURNING id, name, email, role, created_at`,
-      [name, email.toLowerCase(), hashedPassword]
+      [name, email, hashedPassword]
     );
 
     return res.status(201).json({
@@ -59,7 +103,7 @@ export const register = async (req: Request, res: Response) => {
       user: newUser.rows[0],
     });
   } catch (error) {
-    console.error("Register Error:", error);
+    console.error("Register Error");
 
     return res.status(500).json({
       success: false,
@@ -72,25 +116,14 @@ export const register = async (req: Request, res: Response) => {
 // LOGIN USER
 export const login = async (req: Request, res: Response) => {
   try {
-    const { email, password } = req.body;
-
-    // Check fields
-    if (
-      typeof email !== "string" ||
-      !emailSchema.safeParse(email).success ||
-      typeof password !== "string" ||
-      !passwordSchema.safeParse(password).success
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Email and password are required",
-      });
-    }
+    const parsed = loginSchema.safeParse(req.body);
+    if (!parsed.success) return invalidInput(res, "Email and password are required");
+    const { email, password } = parsed.data;
 
     // Find user
     const userResult = await pool.query(
       "SELECT * FROM users WHERE email = $1",
-      [email.toLowerCase()]
+      [email]
     );
 
     if (userResult.rows.length === 0) {
@@ -115,11 +148,9 @@ export const login = async (req: Request, res: Response) => {
       });
     }
 
-    const jwtSecret = process.env.JWT_SECRET;
+    const jwtSecret = getJwtSecret();
 
     if (!jwtSecret) {
-      console.error("JWT_SECRET is not configured");
-
       return res.status(500).json({
         success: false,
         message: "Authentication configuration error",
@@ -136,6 +167,7 @@ export const login = async (req: Request, res: Response) => {
       jwtSecret,
       {
         expiresIn: "7d",
+        algorithm: "HS256",
       }
     );
 
@@ -151,7 +183,7 @@ export const login = async (req: Request, res: Response) => {
       },
     });
   } catch (error) {
-    console.error("Login Error:", error);
+    console.error("Login Error");
 
     return res.status(500).json({
       success: false,
@@ -192,7 +224,7 @@ export const updateUserRole = async (req: Request, res: Response) => {
       user: result.rows[0],
     });
   } catch (error) {
-    console.error("Update User Role Error:", error);
+    console.error("Update User Role Error");
 
     return res.status(500).json({
       success: false,
@@ -202,9 +234,12 @@ export const updateUserRole = async (req: Request, res: Response) => {
 };
 
 // GET PROFILE
-export const getProfile = async (req: any, res: any) => {
+export const getProfile = async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "Authentication required" });
+    }
 
     const result = await pool.query(
       `SELECT id, name, email, role, created_at 
@@ -227,7 +262,7 @@ export const getProfile = async (req: any, res: any) => {
     });
 
   } catch (error) {
-    console.error("Get profile error:", error);
+    console.error("Get profile error");
 
     res.status(500).json({
       success: false,
@@ -236,20 +271,11 @@ export const getProfile = async (req: any, res: any) => {
   }
 };
 // UPDATE PROFILE
-export const updateProfile = async (req: any, res: any) => {
+export const updateProfile = async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.user.id;
-    const { name, email } = req.body;
-
-    if (
-      (name !== undefined && (typeof name !== "string" || !name.trim())) ||
-      (email !== undefined && (!emailSchema.safeParse(email).success))
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Name and email must be valid",
-      });
-    }
+    const parsed = profileSchema.safeParse(req.body);
+    if (!parsed.success) return invalidInput(res, "Name or email must be valid");
+    const { name, email } = parsed.data;
 
     const result = await pool.query(
       `UPDATE users
@@ -257,7 +283,7 @@ export const updateProfile = async (req: any, res: any) => {
            email = COALESCE($2, email)
        WHERE id = $3
        RETURNING id, name, email, created_at`,
-      [name?.trim(), email?.toLowerCase(), userId]
+      [name, email, req.user?.id]
     );
 
     if (result.rows.length === 0) {
@@ -274,7 +300,7 @@ export const updateProfile = async (req: any, res: any) => {
     });
 
   } catch (error) {
-    console.error("Update profile error:", error);
+    console.error("Update profile error");
 
     res.status(500).json({
       success: false,
@@ -285,20 +311,11 @@ export const updateProfile = async (req: any, res: any) => {
 // Change Password
 export const changePassword = async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).user.id;
-
-    const { currentPassword, newPassword } = req.body;
-
-    // Validate input
-    if (
-      typeof currentPassword !== "string" ||
-      !passwordSchema.safeParse(newPassword).success
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Current password and new password are required",
-      });
-    }
+    const parsed = passwordChangeSchema.safeParse(req.body);
+    if (!parsed.success) return invalidInput(res, "Current password and new password are required");
+    const { currentPassword, newPassword } = parsed.data;
+    const userId = (req as AuthRequest).user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Authentication required" });
 
     // Find user
     const userResult = await pool.query(
@@ -343,7 +360,7 @@ const user = userResult.rows[0];
     });
 
   } catch (error) {
-    console.error("Change Password Error:", error);
+    console.error("Change Password Error");
 
     return res.status(500).json({
       success: false,
@@ -354,19 +371,14 @@ const user = userResult.rows[0];
 // FORGOT Password
 export const forgotPassword = async (req: Request, res: Response) => {
   try {
-    const { email } = req.body;
-
-    if (typeof email !== "string" || !emailSchema.safeParse(email).success) {
-      return res.status(400).json({
-        success: false,
-        message: "Email is required",
-      });
-    }
+    const parsed = resetRequestSchema.safeParse(req.body);
+    if (!parsed.success) return invalidInput(res, "Email is required");
+    const { email } = parsed.data;
 
     // Find user
     const userResult = await pool.query(
       "SELECT * FROM users WHERE email = $1",
-      [email.toLowerCase()]
+      [email]
     );
 
     if (userResult.rows.length === 0) {
@@ -408,7 +420,7 @@ export const forgotPassword = async (req: Request, res: Response) => {
     });
 
   } catch (error) {
-    console.error("Forgot Password Error:", error);
+    console.error("Forgot Password Error");
 
     return res.status(500).json({
       success: false,
@@ -418,20 +430,21 @@ export const forgotPassword = async (req: Request, res: Response) => {
 };
 export const resetPassword = async (req: Request, res: Response) => {
   try {
-    const { email, newPassword, resetToken } = req.body;
-
     if (
-      typeof email !== "string" ||
-      !emailSchema.safeParse(email).success ||
-      !passwordSchema.safeParse(newPassword).success
+      !req.body ||
+      typeof req.body !== "object" ||
+      !("resetToken" in req.body)
     ) {
-      return res.status(400).json({
+      return res.status(403).json({
         success: false,
-        message: "Email and new password are required"
+        message: "Please verify OTP before resetting password"
       });
     }
 
-    if (!resetToken || typeof resetToken !== "string") {
+    const parsed = resetPasswordSchema.safeParse(req.body);
+    if (!parsed.success) return invalidInput(res, "Email, new password, and reset token are required");
+    const { email, newPassword, resetToken } = parsed.data;
+    if (!resetToken) {
       return res.status(403).json({
         success: false,
         message: "Please verify OTP before resetting password"
@@ -479,7 +492,7 @@ export const resetPassword = async (req: Request, res: Response) => {
     });
 
   } catch (error) {
-    console.error("Reset Password Error:", error);
+    console.error("Reset Password Error");
 
     return res.status(500).json({
       success: false,
@@ -489,14 +502,9 @@ export const resetPassword = async (req: Request, res: Response) => {
 };
 export const verifyResetOTP = async (req: Request, res: Response) => {
   try {
-    const { email, otp } = req.body;
-
-    if (!email || !otp) {
-      return res.status(400).json({
-        success: false,
-        message: "Email and OTP are required"
-      });
-    }
+    const parsed = otpVerificationSchema.safeParse(req.body);
+    if (!parsed.success) return invalidInput(res, "Email and OTP are required");
+    const { email, otp } = parsed.data;
 
     const userResult = await pool.query(
       "SELECT * FROM users WHERE email = $1",
@@ -582,7 +590,7 @@ export const verifyResetOTP = async (req: Request, res: Response) => {
     });
 
   } catch (error) {
-    console.error("Verify OTP Error:", error);
+    console.error("Verify OTP Error");
 
     return res.status(500).json({
       success: false,
