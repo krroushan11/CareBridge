@@ -35,13 +35,21 @@ export type StructuredFollowUpRecord = {
   recommended_date_or_timeframe?: string | null;
   instructions?: string | null;
   provider_or_specialist?: string | null;
+  status?: "recommended" | "scheduled" | "completed" | "cancelled" | null;
+  source_text?: string | null;
+};
+
+export type StructuredTestRecord = {
+  name: string;
+  result_or_value?: string | null;
+  status?: "normal" | "abnormal" | "positive" | "negative" | "pending" | "not_available" | null;
   source_text?: string | null;
 };
 
 export type StructuredExtractionOutput = {
   medications: Array<string | StructuredMedicationRecord>;
   findings: string[];
-  tests: string[];
+  tests: Array<string | StructuredTestRecord>;
   follow_up: Array<string | StructuredFollowUpRecord>;
   warnings: string[];
   patient_summary: string;
@@ -59,29 +67,83 @@ const MAX_UNCERTAINTY_NOTES = 5;
 const MAX_SUMMARY_LENGTH = 1000;
 
 const boundedText = z.string().trim().min(1).max(MAX_FACT_LENGTH);
+const optionalBoundedText = boundedText.nullable().optional();
+const dosageText = z.string().trim().min(1).max(100).regex(
+  /^\d+(?:\.\d+)?\s*(?:mg|mcg|g|kg|ml|mL|L|units?|iu|tablet(?:s)?|capsule(?:s)?|puff(?:s)?|drop(?:s)?)$/i,
+  "Invalid medication dosage"
+);
+const frequencyText = z.string().trim().min(1).max(100).regex(
+  /^(?:once|twice|three times|four times|every)\b.*$/i,
+  "Invalid medication frequency"
+);
+const durationText = z.string().trim().min(1).max(100).regex(
+  /^(?:\d+(?:\.\d+)?\s*(?:day|days|week|weeks|month|months|year|years)|as needed|ongoing|until finished)$/i,
+  "Invalid medication duration"
+);
+const routeSchema = z.enum([
+  "oral",
+  "sublingual",
+  "topical",
+  "transdermal",
+  "inhaled",
+  "intravenous",
+  "intramuscular",
+  "subcutaneous",
+  "rectal",
+  "vaginal",
+  "ophthalmic",
+  "otic",
+  "nasal",
+  "unknown",
+]);
+const isCalendarDate = (value: string) => {
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+  const parsed = dateOnly
+    ? new Date(`${value}T00:00:00.000Z`)
+    : new Date(value);
+
+  return !Number.isNaN(parsed.getTime())
+    && (!dateOnly || parsed.toISOString().slice(0, 10) === value);
+};
+const followUpDateText = z.string().trim().min(1).max(100).refine(
+  (value) => (
+    /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})?)?$/.test(value)
+      && isCalendarDate(value)
+  )
+    || /^(?:today|tomorrow|next week|next month|in \d+ (?:day|days|week|weeks|month|months)|\d+ (?:day|days|week|weeks|month|months))$/i.test(value),
+  "Invalid follow-up date or timeframe"
+);
 
 const medicationRecordSchema = z.object({
   name: boundedText,
-  dosage: boundedText.nullable().optional(),
-  frequency: boundedText.nullable().optional(),
-  route: boundedText.nullable().optional(),
-  duration: boundedText.nullable().optional(),
-  instructions: boundedText.nullable().optional(),
-  source_text: boundedText.nullable().optional(),
+  dosage: dosageText.nullable().optional(),
+  frequency: frequencyText.nullable().optional(),
+  route: routeSchema.nullable().optional(),
+  duration: durationText.nullable().optional(),
+  instructions: optionalBoundedText,
+  source_text: optionalBoundedText,
 }).strict();
 
 const followUpRecordSchema = z.object({
   type_or_reason: boundedText,
-  recommended_date_or_timeframe: boundedText.nullable().optional(),
-  instructions: boundedText.nullable().optional(),
-  provider_or_specialist: boundedText.nullable().optional(),
-  source_text: boundedText.nullable().optional(),
+  recommended_date_or_timeframe: followUpDateText.nullable().optional(),
+  instructions: optionalBoundedText,
+  provider_or_specialist: optionalBoundedText,
+  status: z.enum(["recommended", "scheduled", "completed", "cancelled"]).nullable().optional(),
+  source_text: optionalBoundedText,
+}).strict();
+
+const testRecordSchema = z.object({
+  name: boundedText,
+  result_or_value: optionalBoundedText,
+  status: z.enum(["normal", "abnormal", "positive", "negative", "pending", "not_available"]).nullable().optional(),
+  source_text: optionalBoundedText,
 }).strict();
 
 export const structuredExtractionSchema = z.object({
   medications: z.array(z.union([boundedText, medicationRecordSchema])).max(MAX_FACT_ITEMS),
   findings: z.array(boundedText).max(MAX_FACT_ITEMS),
-  tests: z.array(boundedText).max(MAX_FACT_ITEMS),
+  tests: z.array(z.union([boundedText, testRecordSchema])).max(MAX_FACT_ITEMS),
   follow_up: z.array(z.union([boundedText, followUpRecordSchema])).max(MAX_FACT_ITEMS),
   warnings: z.array(boundedText).max(MAX_FACT_ITEMS),
   patient_summary: z.string().trim().min(1).max(MAX_SUMMARY_LENGTH),
@@ -187,6 +249,17 @@ const followUpFactText = (followUp: string | StructuredFollowUpRecord) =>
         followUp.recommended_date_or_timeframe,
         followUp.instructions,
         followUp.provider_or_specialist,
+        followUp.status,
+      ].filter(Boolean).join(" ");
+
+const testFactText = (test: string | StructuredTestRecord) =>
+  typeof test === "string"
+    ? test
+    : [
+        test.name,
+        test.result_or_value,
+        test.status,
+        test.source_text,
       ].filter(Boolean).join(" ");
 
 const hasSupportedOutput = (output: StructuredExtractionOutput, sourceText: string) => {
@@ -202,7 +275,9 @@ const hasSupportedOutput = (output: StructuredExtractionOutput, sourceText: stri
         ? medicationFactText(fact as string | StructuredMedicationRecord)
         : category === "follow_up"
           ? followUpFactText(fact as string | StructuredFollowUpRecord)
-          : fact as string;
+          : category === "tests"
+            ? testFactText(fact as string | StructuredTestRecord)
+            : fact as string;
 
       return isFactSupportedBySource(factText, sourceText);
     })

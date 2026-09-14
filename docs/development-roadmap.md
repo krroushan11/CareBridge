@@ -83,6 +83,29 @@ Status: **COMPLETE**
 - [ ] Monitoring
 - [ ] Bug fixing and improvement
 
+## Phase 7 — Schema Validation & AI Safety
+
+Status: **[✓] IMPLEMENTED**
+
+- [✓] Zod strict schema validation
+- [✓] Required categories
+- [✓] Data type validation
+- [✓] Maximum item counts
+- [✓] Field length restrictions
+- [✓] Unexpected field rejection
+- [✓] Source-support checks
+- [✓] Empty-source safe behavior
+- [✓] AI disclaimer
+- [✓] No invented medicines, diagnoses, results, or dates
+- [✓] Sensitive data protection in errors
+- [✓] Structured medication dosage schema
+- [✓] Medication frequency schema
+- [✓] Medication duration schema
+- [✓] Medication route schema
+- [✓] Structured follow-up date validation
+- [✓] Follow-up status validation
+- [✓] Structured test information validation
+
 ## Working Rule
 One milestone at a time: document requirement → implement → TypeScript/build check → tests → verify → record files/results → only then start the next milestone.
 

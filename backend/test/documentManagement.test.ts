@@ -669,10 +669,10 @@ test("Gemini provider requests strict structured JSON and parses valid output", 
         schema: {
           type: "object",
           properties: {
-            medications: { type: "array", items: { type: "string" } },
+            medications: { type: "array", items: { type: ["string", "object"] } },
             findings: { type: "array", items: { type: "string" } },
-            tests: { type: "array", items: { type: "string" } },
-            follow_up: { type: "array", items: { type: "string" } },
+            tests: { type: "array", items: { type: ["string", "object"] } },
+            follow_up: { type: "array", items: { type: ["string", "object"] } },
             warnings: { type: "array", items: { type: "string" } },
             patient_summary: { type: "string" },
             uncertainty_notes: { type: "array", items: { type: "string" } },
@@ -821,6 +821,131 @@ test("schema validator rejects overlong fact items and too many uncertainty note
 
   assert.equal(overlongFact.ok, false);
   assert.equal(tooManyUncertaintyNotes.ok, false);
+});
+
+test("schema validator accepts supported structured medication fields", () => {
+  const result = validateStructuredExtractionOutput({
+    ...validPatientFacingOutput(),
+    medications: [{
+      name: "Metformin",
+      dosage: "500 mg",
+      frequency: "twice daily",
+      duration: "30 days",
+      route: "oral",
+      source_text: "Metformin 500 mg twice daily for 30 days by mouth",
+    }],
+  });
+
+  assert.equal(result.ok, true);
+});
+
+test("schema validator rejects invalid medication dosage, frequency, duration, and route", () => {
+  for (const field of [
+    ["dosage", "a lot"],
+    ["frequency", "sometimes"],
+    ["duration", "soon"],
+    ["route", "telepathic"],
+  ] as const) {
+    const result = validateStructuredExtractionOutput({
+      ...validPatientFacingOutput(),
+      medications: [{ name: "Metformin", [field[0]]: field[1] }],
+    });
+
+    assert.equal(result.ok, false, `expected invalid ${field[0]} to be rejected`);
+  }
+});
+
+test("schema validator accepts and rejects structured follow-up dates and statuses", () => {
+  const valid = validateStructuredExtractionOutput({
+    ...validPatientFacingOutput(),
+    follow_up: [{
+      type_or_reason: "routine review",
+      recommended_date_or_timeframe: "2026-10-01",
+      status: "scheduled",
+      source_text: "Review scheduled for 2026-10-01",
+    }],
+  });
+  const invalidDate = validateStructuredExtractionOutput({
+    ...validPatientFacingOutput(),
+    follow_up: [{ type_or_reason: "review", recommended_date_or_timeframe: "next Tuesday" }],
+  });
+  const invalidCalendarDate = validateStructuredExtractionOutput({
+    ...validPatientFacingOutput(),
+    follow_up: [{ type_or_reason: "review", recommended_date_or_timeframe: "2026-99-99" }],
+  });
+  const invalidStatus = validateStructuredExtractionOutput({
+    ...validPatientFacingOutput(),
+    follow_up: [{ type_or_reason: "review", status: "guessed" }],
+  });
+
+  assert.equal(valid.ok, true);
+  assert.equal(invalidDate.ok, false);
+  assert.equal(invalidCalendarDate.ok, false);
+  assert.equal(invalidStatus.ok, false);
+});
+
+test("schema validator accepts structured test information and rejects malformed records", () => {
+  const valid = validateStructuredExtractionOutput({
+    ...validPatientFacingOutput(),
+    tests: [{
+      name: "Hemoglobin A1c",
+      result_or_value: "6.5%",
+      status: "abnormal",
+      source_text: "Hemoglobin A1c 6.5%",
+    }],
+  });
+  const invalid = validateStructuredExtractionOutput({
+    ...validPatientFacingOutput(),
+    tests: [{ name: "Hemoglobin A1c", result: "6.5%" }],
+  });
+
+  assert.equal(valid.ok, true);
+  assert.equal(invalid.ok, false);
+});
+
+test("structured records are rejected when source support is missing", async () => {
+  setLlmProviderForTests({
+    async extract() {
+      return {
+        ...validPatientFacingOutput(),
+        medications: [{
+          name: "Metformin",
+          dosage: "500 mg",
+          source_text: "Metformin 500 mg",
+        }],
+      };
+    },
+  });
+
+  await assert.rejects(
+    extractStructuredInformation("The document mentions a routine follow-up visit."),
+    /Invalid structured extraction output/
+  );
+});
+
+test("structured records preserve missing optional values instead of fabricating them", async () => {
+  setLlmProviderForTests({
+    async extract() {
+      return {
+        ...validPatientFacingOutput(),
+        medications: [{ name: "Metformin", source_text: "Metformin" }],
+        follow_up: [{
+          type_or_reason: "routine review",
+          source_text: "routine review",
+        }],
+      };
+    },
+  });
+
+  const output = await extractStructuredInformation(
+    "Metformin. routine review."
+  );
+
+  assert.deepEqual(output.medications, [{ name: "Metformin", source_text: "Metformin" }]);
+  assert.deepEqual(output.follow_up, [{
+    type_or_reason: "routine review",
+    source_text: "routine review",
+  }]);
 });
 
 test("LLM extraction preserves ambiguous source text in uncertainty notes", async () => {

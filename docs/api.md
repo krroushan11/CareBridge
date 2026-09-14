@@ -144,6 +144,16 @@ status constraint, and owner/update index. The existing
 `verified_care_plans` workflow remains separate and requires explicit human
 confirmation.
 
+Structured medication records validate dosage, frequency, duration, and route
+when those fields are present. Dosage values use a numeric amount and supported
+unit, frequency and duration use supported textual formats, and route uses the
+supported route set. Structured follow-up records validate ISO dates, ISO
+date-times, or explicit relative timeframes and allow only supported statuses.
+Structured test records validate the test name, optional result/value, optional
+status, and source text. Unexpected fields, malformed values, over-limit values,
+and facts not supported by the document source are rejected safely. Missing
+fields remain null or absent and are never inferred.
+
 ## Database setup
 
 For local development, copy `backend/.env.example` to `backend/.env`, configure PostgreSQL, and apply `backend/database/schema.sql` followed by the SQL files in `backend/database/migrations/` in filename order.

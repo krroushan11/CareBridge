@@ -7,7 +7,7 @@ export class LlmInvalidResponseError extends Error {}
 const extractionInstruction = [
   "Extract only facts explicitly supported by the supplied medical document text.",
   "Return only one JSON object with exactly these keys: medications, findings, tests, follow_up, warnings, patient_summary, uncertainty_notes.",
-  "The five fact categories and uncertainty_notes must contain arrays of strings. Use an empty array when a category is absent.",
+  "Medications may contain structured records with explicitly stated dosage, frequency, route, duration, instructions, and source_text. Follow_up may contain structured records with explicitly stated recommended_date_or_timeframe, status, instructions, provider_or_specialist, and source_text. Tests may contain structured records with explicitly stated name, result_or_value, status, and source_text. Use null for unavailable fields and empty arrays for absent categories.",
   "patient_summary must be a concise plain-language summary of only the returned document-derived facts.",
   "When every fact category is empty, set patient_summary exactly to: No document-derived medical information is available.",
   "Use uncertainty_notes for ambiguity, missing context, or qualifiers in the source. Do not guess.",
@@ -18,10 +18,10 @@ const extractionInstruction = [
 const extractionResponseSchema = {
   type: "object",
   properties: {
-    medications: { type: "array", items: { type: "string" } },
+    medications: { type: "array", items: { type: ["string", "object"] } },
     findings: { type: "array", items: { type: "string" } },
-    tests: { type: "array", items: { type: "string" } },
-    follow_up: { type: "array", items: { type: "string" } },
+    tests: { type: "array", items: { type: ["string", "object"] } },
+    follow_up: { type: "array", items: { type: ["string", "object"] } },
     warnings: { type: "array", items: { type: "string" } },
     patient_summary: { type: "string" },
     uncertainty_notes: { type: "array", items: { type: "string" } },
