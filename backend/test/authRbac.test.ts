@@ -203,6 +203,15 @@ test("role middleware allows only explicitly permitted roles", () => {
     throw new Error("next must not be called");
   });
   assert.equal(deniedRes.statusCode, 403);
+
+  const multiRoleRes = createResponse();
+  let multiRoleNext = false;
+  requireRole("caregiver", "doctor")({
+    user: { id: "user-a", email: "doctor@example.com", role: "doctor" },
+  } as any, multiRoleRes, () => {
+    multiRoleNext = true;
+  });
+  assert.equal(multiRoleNext, true);
 });
 
 test("admin role updates validate roles and return safe user data", async () => {
@@ -231,6 +240,13 @@ test("admin role updates validate roles and return safe user data", async () => 
   assert.deepEqual(updateValues, ["caregiver", "user-b"]);
   assert.equal(res.body.user.password, undefined);
 
+  const unexpectedFieldRes = createResponse();
+  await updateUserRole({
+    params: { id: "user-b" },
+    body: { role: "doctor", extra: true },
+  } as any, unexpectedFieldRes);
+  assert.equal(unexpectedFieldRes.statusCode, 400);
+
   const invalidRes = createResponse();
   await updateUserRole({
     params: { id: "user-b" },
@@ -253,4 +269,21 @@ test("JWT role is taken from the signed token, not the request body", () => {
   authenticateToken(req, res, () => undefined);
 
   assert.equal(req.user.role, "patient");
+});
+
+test("JWTs with an unsupported role are rejected", () => {
+  process.env.JWT_SECRET = "test-jwt-secret";
+  const token = jwt.sign(
+    { id: "user-a", email: "patient@example.com", role: "superuser" },
+    process.env.JWT_SECRET
+  );
+  const res = createResponse();
+
+  authenticateToken({
+    headers: { authorization: `Bearer ${token}` },
+  } as any, res, () => {
+    throw new Error("next must not be called");
+  });
+
+  assert.equal(res.statusCode, 401);
 });

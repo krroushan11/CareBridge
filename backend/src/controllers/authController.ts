@@ -4,7 +4,7 @@ import jwt from "jsonwebtoken";
 import { pool } from "../config/database";
 import crypto from "crypto";
 import { sendOTPEmail } from "../services/emailService";
-import { AuthRequest, getJwtSecret, isUserRole, UserRole } from "../middlewares/authMiddleware";
+import { AuthRequest, getJwtSecret, UserRole } from "../middlewares/authMiddleware";
 import { z } from "zod";
 
 const passwordSchema = z
@@ -55,6 +55,9 @@ const resetPasswordSchema = z.object({
   (value) => value.confirmPassword === value.newPassword,
   { message: "Password confirmation does not match" }
 );
+const roleUpdateSchema = z.object({
+  role: z.enum(["patient", "caregiver", "doctor", "admin"]),
+}).strict();
 
 const invalidInput = (res: Response, message: string) =>
   res.status(400).json({ success: false, message });
@@ -193,14 +196,16 @@ export const login = async (req: Request, res: Response) => {
 };
 
 export const updateUserRole = async (req: Request, res: Response) => {
-  const requestedRole = req.body?.role;
+  const parsed = roleUpdateSchema.safeParse(req.body);
 
-  if (!isUserRole(requestedRole)) {
+  if (!parsed.success) {
     return res.status(400).json({
       success: false,
       message: "Invalid role",
     });
   }
+
+  const requestedRole: UserRole = parsed.data.role;
 
   try {
     const result = await pool.query(
@@ -208,7 +213,7 @@ export const updateUserRole = async (req: Request, res: Response) => {
        SET role = $1, updated_at = NOW()
        WHERE id = $2
        RETURNING id, name, email, role, created_at`,
-      [requestedRole satisfies UserRole, req.params.id]
+      [requestedRole, req.params.id]
     );
 
     if (result.rows.length === 0) {

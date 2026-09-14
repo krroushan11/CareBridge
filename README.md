@@ -89,7 +89,19 @@ The backend build, authentication/reset tests, and regression tests passed.
 ## Phase 3 — Role Based Access Control (RBAC)
 
 
-Status: [ ] NOT IMPLEMENTED
+Status: [✓] COMPLETED
+
+
+### RBAC Features
+
+
+- [x] Allowed roles: patient, caregiver, doctor, and admin
+- [x] Safe patient default for new and legacy accounts
+- [x] Role included in signed JWTs and validated by authentication middleware
+- [x] Centralized role authorization middleware
+- [x] Admin-only role management endpoint
+- [x] Owner-scoped medical-document and analysis access for all roles
+- [x] RBAC regression tests
 
 
 \## Project Structure

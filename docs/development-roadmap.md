@@ -2,6 +2,7 @@
 
 ## Current Status
 - [x] Authentication
+- [x] Role-based access control
 - [x] Password reset with reset authorization
 - [x] PostgreSQL integration
 - [x] Medical-document database table
@@ -66,5 +67,6 @@
 One milestone at a time: document requirement → implement → TypeScript/build check → tests → verify → record files/results → only then start the next milestone.
 
 ## Next Milestone
-**PDF text extraction and OCR foundation.**
-Do not implement the AI layer until extraction and normalization work and are tested.
+**Care relationships and clinician workflow.**
+Do not grant caregiver or doctor access to patient resources until explicit,
+owner-approved relationship records and access rules are designed and tested.

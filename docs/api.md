@@ -74,6 +74,11 @@ Requires an authenticated admin JWT.
 
 Allowed roles are `patient`, `caregiver`, `doctor`, and `admin`.
 
+Only an admin may use this endpoint. Normal registration always creates a
+`patient` account; clients cannot self-assign a privileged role. Document and
+analysis endpoints remain owner-scoped for every role until a separate,
+explicit care-relationship model is introduced.
+
 ## Medical documents
 
 All endpoints require authentication.
