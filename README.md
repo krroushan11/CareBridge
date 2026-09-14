@@ -1,100 +1,95 @@
 # CareBridge AI
 
-## Phase 4 - Medical Document Management
-
-**Status: COMPLETE**
-
-Phase 4 provides authenticated, owner-scoped medical document management with
-private storage and asynchronous processing backed by PostgreSQL.
-
-### Implemented capabilities
-
-- Authenticated medical document upload.
-- Owner-scoped document listing and database queries.
-- Private UUID-based storage keys for uploaded files.
-- PDF, JPEG, and PNG support.
-- MIME type and filename-extension validation.
-- File-signature validation for PDF, JPEG, and PNG content.
-- 10 MB upload limit.
-- Owner-scoped document download/view.
-- Owner-scoped document rename and metadata update.
-- Owner-scoped document deletion, including the private stored file.
-- Owner-scoped processing status API.
-- PostgreSQL-backed asynchronous processing queue.
-- Processing lifecycle: `uploaded` -> `processing` -> `completed` or `failed`.
-- Retry handling for transient processing failures with exponential backoff.
-- Recovery of stale processing records after the processing timeout.
-
-### Medical document API
-
-All endpoints require authentication and enforce the authenticated owner's
-user ID:
-
-| Method | Endpoint | Purpose |
-| --- | --- | --- |
-| `POST` | `/api/documents/upload` | Upload one PDF, JPEG, or PNG document using the `document` multipart field. |
-| `GET` | `/api/documents` | List the authenticated user's documents and safe processing metadata. |
-| `GET` | `/api/documents/:id/download` | Download an owner-scoped private document. |
-| `PATCH` | `/api/documents/:id` | Update the document's display filename. |
-| `DELETE` | `/api/documents/:id` | Delete the document and its private stored file. |
-| `GET` | `/api/documents/:id/status` | Retrieve processing status, timestamps, failure state, and retry metadata. |
-
-Uploads return after the database record is created with `uploaded` status.
-The backend worker then processes queued documents outside the HTTP request.
-Transient failures are retried up to three total processing attempts with
-bounded exponential backoff.
-
-### Security considerations
-
-- Every Phase 4 document endpoint requires authentication.
-- Database reads, updates, deletes, and downloads are scoped to both document
-  ID and authenticated user ID.
-- Uploaded files are stored outside public web routes under generated UUID
-  filenames.
-- Client-provided MIME types and extensions must agree with the supported
-  document types.
-- File signatures are checked before a document is persisted.
-- Download filenames are sanitized before being returned in response headers.
-- Processing responses expose safe status metadata without private storage keys
-  or extracted document content.
-
-### Verification
-
-Phase 4 verification completed successfully:
-
-- Backend TypeScript check passed.
-- Backend production build passed.
-- Document management tests passed.
-- Authentication and RBAC regression tests passed without changing Phase 3
-  behavior.
-- Analysis and verification tests passed.
-- Reset authorization regression tests passed.
-- The Phase 4 migration was applied and its required columns and queue index
-  were verified in the development database.
-- Live download, rename, delete, and status endpoints passed against the
-  database.
-- Asynchronous processing and retry behavior passed against the database.
-
 ## Phase 5 - PDF Text Extraction / OCR
 
 **Status: COMPLETE**
 
-Phase 5 completes document text extraction for native PDFs and scanned
-documents:
+Phase 5 provides asynchronous medical-document text extraction for native PDFs,
+scanned PDFs, JPEG images, and PNG images. Processing is authenticated and
+owner-scoped throughout the document lifecycle.
 
-- Native PDF text extraction runs before OCR.
-- PDF pages are rendered for OCR fallback when native text is insufficient.
-- JPEG and PNG documents use Tesseract OCR.
-- OCR languages are configurable with `OCR_LANGUAGES` (for example,
-  `eng,spa`); English remains the default and safe fallback.
-- OCR language-data failures produce a clear processing failure rather than an
-  indefinite retry loop.
-- The PostgreSQL-backed worker atomically claims jobs, processes them outside
-  upload requests, retries transient failures with bounded exponential
-  backoff, and recovers stale processing jobs.
-- Processing status remains owner-scoped and exposes safe lifecycle,
-  processing-method, attempt, retry, and timestamp metadata only.
+## Completed Features
 
-Remaining limitation: multilingual OCR depends on the Tesseract language data
-available to the deployed worker environment. If configured language data and
-the English fallback are unavailable, the document is marked failed safely.
+- Native PDF text extraction.
+- `pdf-parse` integration.
+- OCR fallback when native PDF text is insufficient.
+- PDF page rendering for OCR.
+- Tesseract OCR.
+- JPEG OCR.
+- PNG OCR.
+- OCR page limit.
+- Whitespace normalization.
+- Processing status tracking.
+- Processing lifecycle:
+  `uploaded` -> `processing` -> `completed` or `failed`.
+- Processing method tracking with `pdf_text` and `ocr`.
+- Configurable multilingual OCR.
+- English OCR fallback when configured language data is unavailable.
+- PostgreSQL-backed background processing queue.
+- Concurrent-safe queue claiming.
+- Stale processing recovery.
+- Bounded retry policy with exponential backoff for transient failures.
+- Dedicated owner-scoped processing status endpoint.
+
+## API
+
+### Processing Status
+
+```http
+GET /api/documents/:id/status
+```
+
+This authenticated endpoint returns safe processing metadata for a document
+owned by the current user, including its ID, status, processing method,
+attempt/retry information, safe error state, and relevant timestamps.
+
+Document processing is asynchronous: uploads return after the document is
+queued, while the background worker performs PDF extraction or OCR separately.
+All document access and processing status queries are owner-scoped.
+
+## Phase 5 Architecture
+
+```text
+Upload
+  -> queued processing
+  -> PDF text extraction / OCR
+  -> processing status
+  -> completed or failed
+```
+
+Native PDF text extraction is attempted first. PDFs that do not contain
+sufficient readable text use rendered-page OCR, while JPEG and PNG documents
+use OCR directly. The worker safely claims queued jobs, recovers stale
+processing records, and applies bounded retries to eligible transient failures.
+
+## Security
+
+- JWT authentication protects document processing and status access.
+- Database queries are scoped to the authenticated document owner.
+- Document IDs are validated as UUIDs before database access.
+- Supported file types and content signatures are validated before processing.
+- Private document storage details and filesystem paths are never exposed.
+- Processing errors are represented by safe status values rather than internal
+  document or storage information.
+
+## Validation and Testing
+
+Phase 5 verification completed successfully:
+
+- TypeScript check passed.
+- Backend build passed.
+- Document management and OCR tests passed.
+- Multilingual OCR configuration test passed.
+- Background queue completion test passed.
+- Concurrent-safe queue claim test passed.
+- Stale processing recovery test passed.
+- Retry and permanent failure tests passed.
+- Processing status and owner-isolation tests passed.
+- Authentication/RBAC regression tests passed.
+- Analysis/verification regression tests passed.
+- Reset authorization regression tests passed.
+- `git diff --check` passed.
+
+## Next Phase
+
+The next phase has not been defined in the current project roadmap.
