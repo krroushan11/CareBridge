@@ -1,185 +1,117 @@
-# CareBridge AI
+# CareBridge AI - Phase 7
 
-## Phase 6 - AI Structured Extraction
-
-**Status: COMPLETE**
-
-Phase 6 adds safe, validated AI structured extraction for completed medical
-documents and automatically persists the result as an owner-scoped DRAFT
-care plan.
+## Phase 7 - Schema Validation & AI Safety
 
 ## Objective
 
-Convert document-derived text into structured, reviewable medical information
-without inventing facts, weakening authentication, or bypassing document
-ownership checks. Draft care plans remain unapproved until a separate explicit
-review and confirmation step.
+Phase 7 treats AI-generated medical extraction as untrusted input. Every
+structured response is validated before acceptance, checked against the source
+document, and handled safely without fabricating unsupported medical
+information or exposing sensitive data.
 
-## AI Structured Extraction
+## Implementation Status
 
-The existing document extraction flow produces one validated JSON object with:
+**[✓] IMPLEMENTED**
 
-- `medications`
-- `findings`
-- `tests`
-- `follow_up`
-- `warnings`
-- `patient_summary`
-- `uncertainty_notes`
+All Phase 7 checklist requirements are complete.
 
-The implementation supports:
+## Implemented Features
 
-- Medicine extraction.
-- Findings extraction.
-- Tests extraction.
-- Follow-up extraction.
-- Strict structured JSON output.
-- OpenAI-compatible provider adapter.
-- Configurable provider URL through `AI_BASE_URL`.
-- Configurable model through `AI_MODEL`.
-- Environment-based API key through `AI_API_KEY`.
-- Structured JSON request format with a strict response schema.
-- Safe provider error handling.
-- Malformed-response validation and rejection.
-- Completed-processing requirement before AI extraction.
-- Document ownership checks on every extraction request.
+- Zod strict schema validation.
+- Required extraction categories.
+- Data type validation.
+- Maximum item counts.
+- Field length restrictions.
+- Unexpected field rejection.
+- Source-support validation.
+- Empty-source safe behavior.
+- AI disclaimer.
+- No invented medicines.
+- No invented diagnoses.
+- No invented test results.
+- No invented dates.
+- Sensitive data protection in errors.
+- Structured medication dosage validation.
+- Medication frequency validation.
+- Medication duration validation.
+- Medication route validation.
+- Structured follow-up date, date-time, and timeframe validation.
+- Follow-up status validation.
+- Structured test information validation.
 
-Provider failures and malformed responses return safe application errors without
-exposing API keys, provider responses, raw document contents, or internal
-implementation details.
+## AI Safety Rules
 
-## Structured Records
+Extracted medical information must be supported by the source document. The
+system rejects unsupported or malformed AI output rather than treating it as
+fact.
 
-### Medication Records
+The AI must not fabricate medicines, dosages, frequencies, durations, routes,
+diagnoses, test names, test results, dates, follow-up instructions, or other
+medical information. Missing information remains missing or null, and source
+uncertainty is preserved where applicable.
 
-Medication entries can preserve only information explicitly returned by the AI
-provider, including:
+## Validation and Testing
 
-- Name
-- Dosage
-- Frequency
-- Route
-- Duration
-- Instructions
-- Source/reference text
+Phase 7 validation and regression coverage includes:
 
-### Follow-Up Records
-
-Follow-up entries can preserve only information explicitly returned by the AI
-provider, including:
-
-- Follow-up type or reason
-- Recommended date or timeframe
-- Instructions
-- Provider or specialist
-- Source/reference text
-
-Missing fields remain unavailable. The service does not infer medication,
-dosage, diagnosis, treatment, provider, or follow-up information.
-
-## Automatic Draft Care-Plan Persistence
-
-After successful extraction for an authenticated user's completed document, the
-system creates or updates one owner-scoped DRAFT care plan for that document.
-The draft stores:
-
-- The validated structured extraction.
-- Structured medication records.
-- Structured follow-up records.
-- The explicit `draft` status.
-
-Persistence is idempotent for repeated extraction requests because each
-document has at most one draft care plan. The database operation checks both
-document ownership and `processing_status = 'completed'`. Draft care plans are
-never automatically approved, activated, published, or finalized.
-
-Empty extraction results produce empty record collections and do not fabricate
-medical data. Failed or malformed AI responses do not create or update a
-draft.
-
-## API
-
-### Structured Document Extraction
-
-```http
-GET /api/documents/:id/extract
-```
-
-Requirements and behavior:
-
-- Requires JWT authentication.
-- Accepts only a document owned by the authenticated user.
-- Requires document processing to be complete.
-- Returns validated structured extraction data and the persisted DRAFT care
-  plan metadata.
-- Does not expose raw extracted text, storage keys, filesystem paths, API keys,
-  or provider error details.
-
-### Explicit Reviewed Confirmation
-
-```http
-POST /api/analysis/:id/confirm
-```
-
-This existing owner-scoped endpoint remains a separate explicit confirmation
-workflow. AI extraction creates only a DRAFT care plan; it does not confirm or
-publish a care plan automatically.
-
-## Database and Migration Changes
-
-Phase 6 adds the PostgreSQL migration:
-
-```text
-backend/database/migrations/20260916_create_draft_care_plans.sql
-```
-
-The migration creates `draft_care_plans` with:
-
-- UUID primary key.
-- Unique document reference to prevent duplicate drafts.
-- Foreign keys to the document and owner.
-- Draft-only status constraint.
-- JSONB medication records.
-- JSONB follow-up records.
-- Validated extraction JSONB.
-- Creation and update timestamps.
-- Owner/update index.
-
-The canonical database schema representation is updated accordingly.
-
-## Security and Ownership
-
-- JWT authentication is required for extraction and confirmation operations.
-- Every document query is scoped to the authenticated owner.
-- Extraction requires a completed, owner-owned document.
-- Draft care plans retain both document and user ownership references.
-- UUID document identifiers are used by the document API.
-- AI output is schema-validated before persistence.
-- Anti-hallucination checks require extracted facts to be supported by source
-  text.
-- The provider is instructed not to invent medicines, dosages, diagnoses,
-  results, dates, or instructions.
-- Sensitive document content and provider credentials are not returned in API
-  responses or ordinary error messages.
-- Existing authentication, RBAC, and verified-care-plan behavior remains
-  unchanged.
-
-## Validation and Test Results
-
-Phase 6 verification passed:
-
-- Backend TypeScript build.
-- Structured medication persistence tests.
-- Structured follow-up persistence tests.
-- Automatic DRAFT care-plan creation tests.
-- Idempotent repeated-extraction persistence tests.
-- Empty-extraction safety tests.
-- Document-owner isolation tests.
-- Authentication and RBAC regression tests.
-- Failed and malformed AI response safety tests.
-- Incomplete/unprocessed document rejection tests.
-- Transactional/partial-persistence safety coverage.
-- Existing document management and extraction tests.
-- Existing analysis/verification regression tests.
-- Existing reset authorization regression tests.
+- Valid medication dosage tests.
+- Invalid medication dosage tests.
+- Valid medication frequency tests.
+- Invalid medication frequency tests.
+- Valid medication duration tests.
+- Invalid medication duration tests.
+- Valid medication route tests.
+- Invalid medication route tests.
+- Valid follow-up date tests.
+- Invalid follow-up date tests, including invalid calendar dates.
+- Valid follow-up status tests.
+- Invalid follow-up status tests.
+- Valid structured test information tests.
+- Malformed and unsupported test information tests.
+- Source-support rejection tests.
+- Empty-source safety tests.
+- Unexpected-field rejection tests.
+- Malformed AI response handling tests.
+- Analysis/verification regression tests.
+- Authentication/RBAC regression tests.
+- Reset authorization regression tests.
+- Backend TypeScript build validation.
 - `git diff --check`.
+
+## API / Validation Behavior
+
+Structured extraction responses are validated with strict Zod schemas before
+they are returned or persisted. Required categories, types, item limits,
+field lengths, structured medication fields, follow-up fields, and test fields
+must conform to the supported model.
+
+Medication records validate dosage, frequency, duration, and route values.
+Follow-up records validate ISO dates, ISO date-times, explicit relative
+timeframes, and supported statuses. Test records validate test name,
+result/value, status, and source text when present.
+
+Unexpected fields and malformed values are rejected safely. Source-support
+checks run after schema validation and reject structured facts that are not
+supported by the extracted document text. Empty source input returns the safe
+empty extraction structure and does not create fabricated facts.
+
+## Security and Data Protection
+
+- Authentication is required for protected document extraction operations.
+- Authorization and document ownership checks remain enforced.
+- Structured extraction is available only for completed, owner-scoped
+  documents.
+- AI output is validated before it can be returned or persisted.
+- Source-support validation reduces hallucinated medical content.
+- Provider failures and malformed responses return safe errors.
+- API keys, credentials, tokens, raw document content, and sensitive provider
+  details are not exposed in errors or ordinary responses.
+- The existing authentication, RBAC, document ownership, OCR, human
+  verification, and verified care-plan behavior remain protected.
+
+## Phase 7 Completion
+
+**Phase 7 - Schema Validation & AI Safety is IMPLEMENTED.**
+
+All Phase 7 schema, safety, validation, and regression checklist requirements
+are complete.
