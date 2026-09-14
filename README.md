@@ -1,63 +1,76 @@
 # CareBridge AI
 
-CareBridge AI is a healthcare and care-management platform. This branch documents Phase 3: Role-Based Access Control (RBAC).
+## Phase 4 - Medical Document Management
 
-## Phase 3 — Role-Based Access Control (RBAC)
+**Status: COMPLETE**
 
-Status: [✓] COMPLETED
+Phase 4 provides authenticated, owner-scoped medical document management with
+private storage and asynchronous processing backed by PostgreSQL.
 
-### Supported roles
+### Implemented capabilities
 
-- **Patient** — the safe default for normal registration.
-- **Caregiver** — a recognized role without access to another user's medical data unless a future explicit relationship model grants it.
-- **Doctor** — a recognized role without access to another user's medical data unless a future explicit relationship model grants it.
-- **Admin** — may manage user roles through the protected administration endpoint.
+- Authenticated medical document upload.
+- Owner-scoped document listing and database queries.
+- Private UUID-based storage keys for uploaded files.
+- PDF, JPEG, and PNG support.
+- MIME type and filename-extension validation.
+- File-signature validation for PDF, JPEG, and PNG content.
+- 10 MB upload limit.
+- Owner-scoped document download/view.
+- Owner-scoped document rename and metadata update.
+- Owner-scoped document deletion, including the private stored file.
+- Owner-scoped processing status API.
+- PostgreSQL-backed asynchronous processing queue.
+- Processing lifecycle: `uploaded` -> `processing` -> `completed` or `failed`.
+- Retry handling for transient processing failures with exponential backoff.
+- Recovery of stale processing records after the processing timeout.
 
-### Role management workflow
+### Medical document API
 
-Normal registration always creates a `patient` account; clients cannot submit a role to self-assign privileges. An authenticated admin can change a user's role through:
+All endpoints require authentication and enforce the authenticated owner's
+user ID:
 
-```http
-PUT /api/auth/admin/users/:id/role
-```
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/documents/upload` | Upload one PDF, JPEG, or PNG document using the `document` multipart field. |
+| `GET` | `/api/documents` | List the authenticated user's documents and safe processing metadata. |
+| `GET` | `/api/documents/:id/download` | Download an owner-scoped private document. |
+| `PATCH` | `/api/documents/:id` | Update the document's display filename. |
+| `DELETE` | `/api/documents/:id` | Delete the document and its private stored file. |
+| `GET` | `/api/documents/:id/status` | Retrieve processing status, timestamps, failure state, and retry metadata. |
 
-The request body accepts only one of the supported roles. The role migration uses `patient` as the safe baseline for legacy accounts without a valid role.
+Uploads return after the database record is created with `uploaded` status.
+The backend worker then processes queued documents outside the HTTP request.
+Transient failures are retried up to three total processing attempts with
+bounded exponential backoff.
 
-### JWT and authorization
+### Security considerations
 
-- Login includes the trusted database role in the signed JWT claims.
-- Authentication validates the token payload and rejects missing, invalid, expired, or unsupported-role tokens.
-- Centralized `requireRole(...)` middleware supports one or more allowed roles and returns `403` when an authenticated user lacks the required role.
-- The admin role-management route requires both JWT authentication and `requireRole("admin")`.
+- Every Phase 4 document endpoint requires authentication.
+- Database reads, updates, deletes, and downloads are scoped to both document
+  ID and authenticated user ID.
+- Uploaded files are stored outside public web routes under generated UUID
+  filenames.
+- Client-provided MIME types and extensions must agree with the supported
+  document types.
+- File signatures are checked before a document is persisted.
+- Download filenames are sanitized before being returned in response headers.
+- Processing responses expose safe status metadata without private storage keys
+  or extracted document content.
 
-### Resource-level permissions
+### Verification
 
-Patients can access only their own protected account, document, and analysis resources. Document upload, listing, structured extraction, and reviewed care-plan confirmation all require authentication and enforce the authenticated owner's user ID in database queries.
+Phase 4 verification completed successfully:
 
-Caregiver and doctor roles currently retain the same owner-only resource boundary. Admins can manage roles, but do not have unrestricted access to users' medical documents or care plans.
-
-### RBAC validation
-
-The RBAC regression tests cover:
-
-- safe patient-only registration and rejection of role mass assignment;
-- role inclusion in JWTs and rejection of unsupported role claims;
-- missing and invalid JWT rejection;
-- single-role and multi-role authorization allow/deny behaviour;
-- strict admin role-update validation and safe response fields.
-
-TypeScript validation and the existing backend test suites passed for the Phase 3 implementation.
-
-### Current limitation
-
-Caregiver or doctor access to another patient's data is intentionally not implemented. It requires a separate, explicit, owner-approved care-relationship model with auditable grants and revocation. No role receives implicit cross-user medical-data access.
-
-### Technology
-
-- TypeScript
-- Node.js and Express
-- PostgreSQL
-- JWT-based authentication and role authorization
-- REST API
-
-Repository: https://github.com/krroushan11/CareBridge
+- Backend TypeScript check passed.
+- Backend production build passed.
+- Document management tests passed.
+- Authentication and RBAC regression tests passed without changing Phase 3
+  behavior.
+- Analysis and verification tests passed.
+- Reset authorization regression tests passed.
+- The Phase 4 migration was applied and its required columns and queue index
+  were verified in the development database.
+- Live download, rename, delete, and status endpoints passed against the
+  database.
+- Asynchronous processing and retry behavior passed against the database.
