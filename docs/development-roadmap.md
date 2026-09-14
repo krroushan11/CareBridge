@@ -16,15 +16,32 @@
 - [x] Owner-scoped document download, rename, delete, and processing-status APIs
 - [x] Asynchronous PostgreSQL-backed document processing worker
 - [x] Bounded retry and stale-processing recovery
+- [x] Native PDF text extraction with OCR fallback
+- [x] Configurable multilingual OCR
+- [x] Background extraction worker and owner-scoped processing status
+
+## Phase 5 — PDF Text Extraction / OCR
+
+Status: **COMPLETE**
+
+- [x] Native PDF text extraction
+- [x] PDF rendering for OCR fallback
+- [x] Tesseract OCR for PDF, JPEG, and PNG documents
+- [x] Configurable multilingual OCR with English fallback
+- [x] OCR page limit and whitespace normalization
+- [x] Processing method tracking (`pdf_text` or `ocr`)
+- [x] Transaction-safe background queue claiming
+- [x] Bounded retry and stale-job recovery
+- [x] Dedicated owner-scoped processing status endpoint
 
 ## Phase 1 — Document Intelligence Foundation
-- [ ] Define processing lifecycle
-- [ ] PDF text extraction
-- [ ] Detect when OCR is needed
-- [ ] OCR for supported scanned/image documents
-- [ ] Normalize extracted text
-- [ ] Store safe processing metadata/status
-- [ ] Test success and failure cases
+- [x] Define processing lifecycle
+- [x] PDF text extraction
+- [x] Detect when OCR is needed
+- [x] OCR for supported scanned/image documents
+- [x] Normalize extracted text
+- [x] Store safe processing metadata/status
+- [x] Test success and failure cases
 
 ## Phase 2 — AI Information Extraction
 - [ ] Define strict AI output schema
@@ -49,7 +66,7 @@
 - [ ] Document history
 - [ ] User-facing progress/status
 
-## Phase 5 — Frontend
+## Phase 6 — Frontend
 - [ ] Connect frontend to backend
 - [ ] Authentication
 - [ ] Upload

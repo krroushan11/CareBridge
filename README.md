@@ -74,3 +74,27 @@ Phase 4 verification completed successfully:
 - Live download, rename, delete, and status endpoints passed against the
   database.
 - Asynchronous processing and retry behavior passed against the database.
+
+## Phase 5 - PDF Text Extraction / OCR
+
+**Status: COMPLETE**
+
+Phase 5 completes document text extraction for native PDFs and scanned
+documents:
+
+- Native PDF text extraction runs before OCR.
+- PDF pages are rendered for OCR fallback when native text is insufficient.
+- JPEG and PNG documents use Tesseract OCR.
+- OCR languages are configurable with `OCR_LANGUAGES` (for example,
+  `eng,spa`); English remains the default and safe fallback.
+- OCR language-data failures produce a clear processing failure rather than an
+  indefinite retry loop.
+- The PostgreSQL-backed worker atomically claims jobs, processes them outside
+  upload requests, retries transient failures with bounded exponential
+  backoff, and recovers stale processing jobs.
+- Processing status remains owner-scoped and exposes safe lifecycle,
+  processing-method, attempt, retry, and timestamp metadata only.
+
+Remaining limitation: multilingual OCR depends on the Tesseract language data
+available to the deployed worker environment. If configured language data and
+the English fallback are unavailable, the document is marked failed safely.

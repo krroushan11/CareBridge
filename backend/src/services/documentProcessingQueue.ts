@@ -1,51 +1,89 @@
 import { pool } from "../config/database";
-import { processMedicalDocument, ProcessingDocument } from "./documentExtractionService";
+import {
+  ExtractionResult,
+  processClaimedMedicalDocument,
+  ProcessingDocument,
+} from "./documentExtractionService";
 
 const POLL_INTERVAL_MS = 30_000;
 const BATCH_SIZE = 5;
 
 let workerRunning = false;
 
-export const processQueuedDocuments = async (limit = BATCH_SIZE) => {
-  await pool.query(
-    `UPDATE medical_documents
-     SET processing_status = CASE
-           WHEN processing_attempts >= 3 THEN 'failed'
-           ELSE 'uploaded'
-         END,
-         processing_completed_at = CASE
-           WHEN processing_attempts >= 3 THEN NOW()
-           ELSE processing_completed_at
-         END,
-         processing_error = CASE
-           WHEN processing_attempts >= 3 THEN 'processing_failed'
-           ELSE 'processing_retry_scheduled'
-         END,
-         next_retry_at = CASE
-           WHEN processing_attempts >= 3 THEN NULL
-           ELSE NOW()
-         END
-     WHERE processing_status = 'processing'
-       AND processing_started_at < NOW() - INTERVAL '15 minutes'`
-  );
+export const processQueuedDocuments = async (
+  limit = BATCH_SIZE,
+  extractor?: (filePath: string, mimeType: string) => Promise<ExtractionResult>
+) => {
+  const client = await pool.connect();
+  let claimedDocuments: Array<ProcessingDocument & { attempt: number }> = [];
 
-  const queuedDocuments = await pool.query(
-    `SELECT id, user_id, storage_key, mime_type
-     FROM medical_documents
-     WHERE processing_status = 'uploaded'
-       AND (next_retry_at IS NULL OR next_retry_at <= NOW())
-     ORDER BY created_at ASC
-     LIMIT $1`,
-    [limit]
-  );
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `UPDATE medical_documents
+       SET processing_status = CASE
+             WHEN processing_attempts >= 3 THEN 'failed'
+             ELSE 'uploaded'
+           END,
+           processing_completed_at = CASE
+             WHEN processing_attempts >= 3 THEN NOW()
+             ELSE processing_completed_at
+           END,
+           processing_error = CASE
+             WHEN processing_attempts >= 3 THEN 'processing_failed'
+             ELSE 'processing_retry_scheduled'
+           END,
+           next_retry_at = CASE
+             WHEN processing_attempts >= 3 THEN NULL
+             ELSE NOW()
+           END
+       WHERE processing_status = 'processing'
+         AND processing_started_at < NOW() - INTERVAL '15 minutes'`
+    );
 
-  for (const document of queuedDocuments.rows) {
-    await processMedicalDocument({
+    const queuedDocuments = await client.query(
+      `WITH candidates AS (
+         SELECT id
+         FROM medical_documents
+         WHERE processing_status = 'uploaded'
+           AND (next_retry_at IS NULL OR next_retry_at <= NOW())
+         ORDER BY created_at ASC
+         LIMIT $1
+         FOR UPDATE SKIP LOCKED
+       )
+       UPDATE medical_documents AS documents
+       SET processing_status = 'processing',
+           processing_started_at = NOW(),
+           processing_completed_at = NULL,
+           processing_method = NULL,
+           processing_error = NULL,
+           extracted_text = NULL,
+           next_retry_at = NULL,
+           processing_attempts = processing_attempts + 1
+       FROM candidates
+       WHERE documents.id = candidates.id
+       RETURNING documents.id, documents.user_id, documents.storage_key,
+                 documents.mime_type, documents.processing_attempts`,
+      [limit]
+    );
+
+    claimedDocuments = queuedDocuments.rows.map((document) => ({
       id: document.id,
       userId: document.user_id,
       storageKey: document.storage_key,
       mimeType: document.mime_type,
-    } satisfies ProcessingDocument);
+      attempt: Number(document.processing_attempts),
+    }));
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  for (const document of claimedDocuments) {
+    await processClaimedMedicalDocument(document, document.attempt, extractor);
   }
 };
 

@@ -7,6 +7,7 @@ import { getPrivateDocumentPath } from "../middlewares/documentUploadMiddleware"
 const MINIMUM_PDF_TEXT_LENGTH = 20;
 const MAX_PDF_OCR_PAGES = 20;
 export const MAX_PROCESSING_ATTEMPTS = 3;
+const DEFAULT_OCR_LANGUAGES = "eng";
 
 export type ExtractionResult = {
   text: string;
@@ -16,7 +17,7 @@ export type ExtractionResult = {
 export type ExtractionDependencies = {
   extractPdfText: (filePath: string) => Promise<string>;
   renderPdfPages: (filePath: string) => Promise<Buffer[]>;
-  extractImageText: (image: Buffer | string) => Promise<string>;
+  extractImageText: (image: Buffer | string, languages?: string) => Promise<string>;
 };
 
 export type ProcessingDocument = {
@@ -27,6 +28,28 @@ export type ProcessingDocument = {
 };
 
 const normalizeExtractedText = (text: string) => text.replace(/\s+/g, " ").trim();
+
+export class OcrLanguageError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OcrLanguageError";
+  }
+}
+
+export const getConfiguredOcrLanguages = () => {
+  const configured = (process.env.OCR_LANGUAGES || DEFAULT_OCR_LANGUAGES)
+    .split(/[,+]/)
+    .map((language) => language.trim())
+    .filter(Boolean);
+
+  if (configured.length === 0 || configured.some((language) => !/^[a-zA-Z0-9_-]+$/.test(language))) {
+    throw new OcrLanguageError(
+      "OCR_LANGUAGES must contain one or more valid Tesseract language codes"
+    );
+  }
+
+  return configured.join("+");
+};
 
 const isRetryableProcessingError = (error: unknown) => {
   const message = error instanceof Error ? error.message.toLowerCase() : "";
@@ -68,10 +91,28 @@ const renderPdfPages = async (filePath: string) => {
   }
 };
 
-const extractImageText = async (image: Buffer | string) => {
+const extractImageText = async (image: Buffer | string, languages = getConfiguredOcrLanguages()) => {
   Tesseract.setLogging(false);
-  const result = await Tesseract.recognize(image, "eng");
-  return normalizeExtractedText(result.data.text);
+
+  try {
+    const result = await Tesseract.recognize(image, languages);
+    return normalizeExtractedText(result.data.text);
+  } catch (error) {
+    if (languages === DEFAULT_OCR_LANGUAGES) {
+      throw new OcrLanguageError(
+        "English OCR language data is unavailable or OCR could not process the document"
+      );
+    }
+
+    try {
+      const fallbackResult = await Tesseract.recognize(image, DEFAULT_OCR_LANGUAGES);
+      return normalizeExtractedText(fallbackResult.data.text);
+    } catch {
+      throw new OcrLanguageError(
+        "Configured OCR language data is unavailable and English fallback could not process the document"
+      );
+    }
+  }
 };
 
 const defaultDependencies: ExtractionDependencies = {
@@ -94,7 +135,7 @@ export const extractMedicalDocumentText = async (
 
     const pages = await dependencies.renderPdfPages(filePath);
     const extractedPages = await Promise.all(
-      pages.map((page) => dependencies.extractImageText(page))
+      pages.map((page) => dependencies.extractImageText(page, getConfiguredOcrLanguages()))
     );
     const extractedText = normalizeExtractedText(extractedPages.join("\n"));
 
@@ -106,7 +147,9 @@ export const extractMedicalDocumentText = async (
   }
 
   if (mimeType === "image/jpeg" || mimeType === "image/png") {
-    const text = await dependencies.extractImageText(filePath);
+    const text = normalizeExtractedText(
+      await dependencies.extractImageText(filePath, getConfiguredOcrLanguages())
+    );
 
     if (!text) {
       throw new Error("OCR did not extract readable text");
@@ -124,8 +167,6 @@ export const processMedicalDocument = async (
   document: ProcessingDocument,
   extractor = extractMedicalDocumentText
 ) => {
-  let attempt = 0;
-
   try {
     const processingResult = await pool.query(
       `UPDATE medical_documents
@@ -148,8 +189,22 @@ export const processMedicalDocument = async (
       return;
     }
 
-    attempt = Number(processingResult.rows[0].processing_attempts);
+    await processClaimedMedicalDocument(
+      document,
+      Number(processingResult.rows[0].processing_attempts),
+      extractor
+    );
+  } catch {
+    // Processing errors are recorded against the document without exposing document content.
+  }
+};
 
+export const processClaimedMedicalDocument = async (
+  document: ProcessingDocument,
+  attempt: number,
+  extractor = extractMedicalDocumentText
+) => {
+  try {
     const extraction = await extractor(
       getPrivateDocumentPath(document.storageKey),
       document.mimeType
@@ -165,7 +220,8 @@ export const processMedicalDocument = async (
            processing_method = $2,
            processing_status = 'completed',
            processing_completed_at = NOW(),
-           processing_error = NULL
+           processing_error = NULL,
+           next_retry_at = NULL
        WHERE id = $3
          AND user_id = $4
          AND processing_status = 'processing'`,
@@ -173,8 +229,7 @@ export const processMedicalDocument = async (
     );
   } catch (error) {
     try {
-      const shouldRetry = attempt > 0 &&
-        attempt < MAX_PROCESSING_ATTEMPTS &&
+      const shouldRetry = attempt < MAX_PROCESSING_ATTEMPTS &&
         isRetryableProcessingError(error);
 
       if (shouldRetry) {

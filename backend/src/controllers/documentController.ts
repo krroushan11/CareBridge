@@ -28,6 +28,11 @@ const isValidDocumentId = (documentId: string) => documentIdSchema.safeParse(doc
 const safeDownloadFilename = (filename: string) =>
   basename(filename).replace(/["\\\r\n]/g, "_") || "medical-document";
 
+const safeProcessingErrors = new Set(["processing_retry_scheduled", "processing_failed"]);
+
+const toSafeProcessingError = (error: unknown) =>
+  typeof error === "string" && safeProcessingErrors.has(error) ? error : null;
+
 const removeUploadedFile = async (filePath: string) => {
   try {
     await unlink(filePath);
@@ -318,7 +323,13 @@ export const getDocumentProcessingStatus = async (req: Request, res: Response) =
       return res.status(404).json({ success: false, message: "Medical document not found" });
     }
 
-    return res.status(200).json({ success: true, document: result.rows[0] });
+    return res.status(200).json({
+      success: true,
+      document: {
+        ...result.rows[0],
+        processing_error: toSafeProcessingError(result.rows[0].processing_error),
+      },
+    });
   } catch {
     return res.status(500).json({ success: false, message: "Failed to fetch document processing status" });
   }

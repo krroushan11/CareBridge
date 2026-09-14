@@ -92,7 +92,9 @@ All endpoints require authentication.
 - `DELETE /api/documents/:id` — delete an owner-scoped document and its private local file.
 - `GET /api/documents/:id/status` — retrieve owner-scoped processing status, timestamps, safe failure state, and retry metadata.
 
-Uploads return after the database record is created with `uploaded` status. The built-in PostgreSQL-backed worker claims queued records outside the HTTP request, processes them asynchronously, and records `processing`, `completed`, or `failed`. Transient processing failures are retried up to three total attempts with bounded backoff. This worker runs in the backend process; multi-instance production deployments should run a dedicated worker process or use shared queue-worker orchestration.
+Uploads return after the database record is created with `uploaded` status. A PostgreSQL-backed background worker atomically claims queued records outside the HTTP request, processes them asynchronously, and records `processing`, `completed`, or `failed`. Transient processing failures are retried up to three total attempts with bounded exponential backoff. Stale processing records are recovered by the worker. The worker runs in the backend process; multi-instance production deployments should run one worker process per deployment or use shared queue-worker orchestration.
+
+PDFs use native text extraction first and fall back to OCR when extracted text is below the readability threshold. JPEG and PNG files use OCR directly. Tesseract languages are configurable with the `OCR_LANGUAGES` environment setting using comma-separated language codes such as `eng,spa`; English remains the default and is used as a safe fallback when configured language data is unavailable.
 
 ## Analysis verification
 

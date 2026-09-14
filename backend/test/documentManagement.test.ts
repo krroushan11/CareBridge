@@ -25,7 +25,14 @@ import {
     validateStructuredExtractionOutput,
 } from "../src/services/aiExtractionService";
 import { createConfiguredLlmProvider } from "../src/services/llmProvider";
-import { MAX_PROCESSING_ATTEMPTS, processMedicalDocument } from "../src/services/documentExtractionService";
+import {
+  extractMedicalDocumentText,
+  getConfiguredOcrLanguages,
+  MAX_PROCESSING_ATTEMPTS,
+  OcrLanguageError,
+  processMedicalDocument,
+} from "../src/services/documentExtractionService";
+import { processQueuedDocuments } from "../src/services/documentProcessingQueue";
 
 const ownedDocumentId = "11111111-1111-4111-8111-111111111111";
 
@@ -267,12 +274,20 @@ test("owners can update safe document metadata and invalid names are rejected", 
 });
 
 test("owners can retrieve safe processing status", async () => {
-  setQueryMock(async () => ({ rows: [{ id: ownedDocumentId, processing_status: "uploaded", processing_attempts: 1 }] }));
+  setQueryMock(async () => ({
+    rows: [{
+      id: ownedDocumentId,
+      processing_status: "uploaded",
+      processing_attempts: 1,
+      processing_error: "internal database detail",
+    }],
+  }));
   const res = createResponse();
   await getDocumentProcessingStatus({ user: { id: "user-a" }, params: { id: ownedDocumentId } } as any, res);
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.document.id, ownedDocumentId);
   assert.equal(res.body.document.storage_key, undefined);
+  assert.equal(res.body.document.processing_error, null);
 });
 
 test("owners can delete their private document after an owner-scoped database lookup", async () => {
@@ -368,6 +383,105 @@ test("processing is marked failed after the retry limit", async () => {
   );
 
   assert.equal(failed, true);
+});
+
+test("OCR language configuration supports multiple languages and defaults to English", async () => {
+  const originalLanguages = process.env.OCR_LANGUAGES;
+  process.env.OCR_LANGUAGES = "eng,spa";
+  assert.equal(getConfiguredOcrLanguages(), "eng+spa");
+
+  let languagesUsed = "";
+  const result = await extractMedicalDocumentText(
+    "unused.png",
+    "image/png",
+    {
+      extractPdfText: async () => "",
+      renderPdfPages: async () => [],
+      extractImageText: async (_image, languages) => {
+        languagesUsed = languages || "";
+        return " Texto en español ";
+      },
+    }
+  );
+
+  assert.equal(languagesUsed, "eng+spa");
+  assert.deepEqual(result, { text: "Texto en español", method: "ocr" });
+
+  if (originalLanguages === undefined) delete process.env.OCR_LANGUAGES;
+  else process.env.OCR_LANGUAGES = originalLanguages;
+});
+
+test("invalid OCR language configuration fails clearly", () => {
+  const originalLanguages = process.env.OCR_LANGUAGES;
+  process.env.OCR_LANGUAGES = "eng,invalid language";
+  assert.throws(() => getConfiguredOcrLanguages(), OcrLanguageError);
+
+  if (originalLanguages === undefined) delete process.env.OCR_LANGUAGES;
+  else process.env.OCR_LANGUAGES = originalLanguages;
+});
+
+test("background queue claims and completes a document without duplicate processing", async () => {
+  const originalConnect = (pool as any).connect;
+  const originalPoolQuery = (pool as any).query;
+  let clientQueries = 0;
+  let extractionQueries = 0;
+
+  (pool as any).connect = async () => ({
+    query: async (query: string) => {
+      clientQueries += 1;
+      if (query === "BEGIN" || query === "COMMIT") return { rows: [] };
+      if (query.includes("WITH candidates")) {
+        return {
+          rows: [{
+            id: ownedDocumentId,
+            user_id: "user-a",
+            storage_key: "queued.pdf",
+            mime_type: "application/pdf",
+            processing_attempts: 1,
+          }],
+        };
+      }
+      if (query.includes("UPDATE medical_documents")) return { rows: [] };
+      return { rows: [] };
+    },
+    release: () => undefined,
+  });
+  (pool as any).query = async (query: string) => {
+    if (query.includes("SET extracted_text")) extractionQueries += 1;
+    return { rows: [] };
+  };
+
+  await processQueuedDocuments(1, async () => ({
+    text: "Queued document text",
+    method: "pdf_text",
+  }));
+
+  assert.equal(clientQueries >= 3, true);
+  assert.equal(extractionQueries, 1);
+  (pool as any).connect = originalConnect;
+  (pool as any).query = originalPoolQuery;
+});
+
+test("background queue includes stale processing recovery before claiming jobs", async () => {
+  const originalConnect = (pool as any).connect;
+  let staleRecoveryQuery = "";
+
+  (pool as any).connect = async () => ({
+    query: async (query: string) => {
+      if (query === "BEGIN" || query === "COMMIT") return { rows: [] };
+      if (query.includes("processing_started_at < NOW() - INTERVAL '15 minutes'")) {
+        staleRecoveryQuery = query;
+      }
+      return { rows: [] };
+    },
+    release: () => undefined,
+  });
+
+  await processQueuedDocuments(1);
+
+  assert.match(staleRecoveryQuery, /processing_status = 'processing'/);
+  assert.match(staleRecoveryQuery, /processing_attempts >= 3/);
+  (pool as any).connect = originalConnect;
 });
 
 test("processMedicalDocument marks a row failed when extraction cannot produce normalized text", async () => {
