@@ -1,177 +1,63 @@
-\# CareBridge AI
+# CareBridge AI
 
+CareBridge AI is a healthcare and care-management platform. This branch documents Phase 3: Role-Based Access Control (RBAC).
 
-
-AI-enabled healthcare and care management platform.
-
-
-
-\## Phase 1 — Project Foundation
-
-
-
-Phase 1 establishes the core foundation of the CareBridge AI project, including the repository structure, frontend and backend setup, database foundation, authentication, documentation, and development environment.
-
-
-
-\### Completed Scope
-
-
-
-\- GitHub repository and project structure
-
-\- Frontend setup
-
-\- Backend API setup
-
-\- Docker and environment configuration
-
-\- PostgreSQL database schema
-
-\- Authentication and authorization foundation
-
-\- API documentation
-
-\- Initial automated tests
-
-\- Project development documentation
-
-
-\## Phase 2 — Authentication
-
+## Phase 3 — Role-Based Access Control (RBAC)
 
 Status: [✓] COMPLETED
 
-
-### Authentication Features
-
-
-- [x] User Registration
-- [x] bcrypt Password Hashing
-- [x] Login
-- [x] JWT Generation
-- [x] JWT Authentication Middleware
-- [x] Protected Profile Route
-- [x] Profile Update
-- [x] Password Change
-- [x] Password Reset
-- [x] Email OTP
-- [x] Hashed OTP Storage
-- [x] OTP Expiry
-- [x] Reset Authorization Token
-- [x] Rate Limiting
-
-
-### Security and Validation Improvements
-
-
-- [x] Strong JWT secret startup validation
-- [x] Rejection of weak/placeholder JWT secrets
-- [x] JWT restricted to HS256
-- [x] Login and registration rate limiting
-- [x] Strong input validation using Zod
-- [x] Email normalization
-- [x] Password validation
-- [x] confirmPassword validation for password change and reset
-- [x] Strict six-digit numeric OTP validation
-- [x] Reset-token length validation
-- [x] Rejection of unexpected fields on sensitive authentication endpoints
-- [x] Prevention of sensitive authentication details from being logged
-- [x] Safe user response fields without password hashes
-
-
-### Testing & Validation
-
-
-The backend build, authentication/reset tests, and regression tests passed.
-
-
-## Phase 3 — Role Based Access Control (RBAC)
-
-
-Status: Implemented and validated
-
 ### Supported roles
 
-- **Patient** — the safe default assigned during normal registration.
-- **Caregiver** — a recognized role with no additional patient-data access until an explicit relationship model is implemented.
-- **Doctor** — a recognized role with no additional patient-data access until an explicit relationship model is implemented.
-- **Admin** — can manage user roles through the protected administration endpoint.
+- **Patient** — the safe default for normal registration.
+- **Caregiver** — a recognized role without access to another user's medical data unless a future explicit relationship model grants it.
+- **Doctor** — a recognized role without access to another user's medical data unless a future explicit relationship model grants it.
+- **Admin** — may manage user roles through the protected administration endpoint.
 
-### Authorization approach
+### Role management workflow
 
-- The database constrains roles to `patient`, `caregiver`, `doctor`, and `admin`; existing accounts without a valid role are safely migrated to `patient`.
-- Login signs the authenticated user's database role into the JWT claim set.
-- Authentication validates the signed token payload, including that its role is one of the supported roles.
-- Centralized `requireRole(...)` middleware supports one or more allowed roles and returns `403` for authenticated users without permission.
-- Normal registration does not accept role assignment and always creates a `patient` account, preventing self-assignment of privileged roles.
+Normal registration always creates a `patient` account; clients cannot submit a role to self-assign privileges. An authenticated admin can change a user's role through:
 
-### Role management and protected functionality
+```http
+PUT /api/auth/admin/users/:id/role
+```
 
-- `PUT /api/auth/admin/users/:id/role` is protected by JWT authentication and `requireRole("admin")`.
-- The endpoint accepts only a supported role and returns safe user fields; password hashes are not returned.
-- Document upload, document listing, structured extraction, and reviewed-care-plan confirmation remain authenticated and owner-scoped for every role. Database queries require the document owner ID, preventing cross-user document access.
+The request body accepts only one of the supported roles. The role migration uses `patient` as the safe baseline for legacy accounts without a valid role.
 
-### Permission behaviour
+### JWT and authorization
 
-Patients can access only their own protected account, document, and analysis resources. Caregiver and doctor roles currently retain the same owner-only resource boundary; the application does not infer care relationships or grant broad access to other users' medical documents. Admins can perform role management, but no unrestricted medical-document access is implemented.
+- Login includes the trusted database role in the signed JWT claims.
+- Authentication validates the token payload and rejects missing, invalid, expired, or unsupported-role tokens.
+- Centralized `requireRole(...)` middleware supports one or more allowed roles and returns `403` when an authenticated user lacks the required role.
+- The admin role-management route requires both JWT authentication and `requireRole("admin")`.
+
+### Resource-level permissions
+
+Patients can access only their own protected account, document, and analysis resources. Document upload, listing, structured extraction, and reviewed care-plan confirmation all require authentication and enforce the authenticated owner's user ID in database queries.
+
+Caregiver and doctor roles currently retain the same owner-only resource boundary. Admins can manage roles, but do not have unrestricted access to users' medical documents or care plans.
 
 ### RBAC validation
 
-The RBAC regression suite covers safe patient registration, role claims in JWTs, invalid and missing JWT rejection, supported-role validation, role middleware allow/deny behaviour, strict role-update validation, and safe admin-role update responses. TypeScript validation and the existing backend test suites passed during the Phase 3 implementation.
+The RBAC regression tests cover:
 
-### Known limitations and future improvements
+- safe patient-only registration and rejection of role mass assignment;
+- role inclusion in JWTs and rejection of unsupported role claims;
+- missing and invalid JWT rejection;
+- single-role and multi-role authorization allow/deny behaviour;
+- strict admin role-update validation and safe response fields.
 
-Caregiver and doctor access to patient data requires a separate, explicit, owner-approved relationship model with auditable grants and revocation. That model is intentionally not implemented by current RBAC, so no caregiver, doctor, or admin role receives implicit access to another user's medical documents or care plans.
+TypeScript validation and the existing backend test suites passed for the Phase 3 implementation.
 
+### Current limitation
 
-\## Project Structure
+Caregiver or doctor access to another patient's data is intentionally not implemented. It requires a separate, explicit, owner-approved care-relationship model with auditable grants and revocation. No role receives implicit cross-user medical-data access.
 
+### Technology
 
+- TypeScript
+- Node.js and Express
+- PostgreSQL
+- JWT-based authentication and role authorization
+- REST API
 
-```text
-
-CareBridge/
-
-├── backend/
-
-├── frontend/
-
-├── docs/
-
-├── docker-compose.yml
-
-└── .env.example
-
-
-
-Technology Stack
-
-TypeScript
-
-Node.js
-
-PostgreSQL
-
-Docker
-
-REST API
-
-Git \& GitHub
-
-Development Status
-
-
-
-Phase 1 — Completed
-
-
-
-Further phases will build on this foundation with additional healthcare, document-processing, and AI capabilities.
-
-
-
-Repository
-
-GitHub: https://github.com/krroushan11/CareBridge
-
+Repository: https://github.com/krroushan11/CareBridge
