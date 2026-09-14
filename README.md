@@ -90,6 +90,27 @@ Phase 5 verification completed successfully:
 - Reset authorization regression tests passed.
 - `git diff --check` passed.
 
+## Phase 6 - AI Structured Extraction
+
+**Status: CORE IMPLEMENTED**
+
+Phase 6 adds validated structured medication and follow-up records to the
+completed-document extraction flow. `GET /api/documents/:id/extract` remains
+authenticated and owner-scoped. After successful extraction, it automatically
+creates or updates one DRAFT care plan for the document owner.
+
+Medication records preserve explicitly returned fields such as name, dosage,
+frequency, route, duration, instructions, and source text. Follow-up records
+preserve explicitly returned type/reason, date or timeframe, instructions,
+provider/specialist, and source text. Missing information remains unavailable;
+the service does not invent medical data.
+
+Draft persistence is idempotent and atomic at the database statement level.
+Drafts remain explicitly marked `draft` and are never automatically approved,
+activated, published, or finalized. The migration
+`backend/database/migrations/20260916_create_draft_care_plans.sql` adds the
+owner-scoped draft care-plan storage.
+
 ## Next Phase
 
 The next phase has not been defined in the current project roadmap.

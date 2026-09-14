@@ -20,11 +20,29 @@ export type StructuredExtractionCategory =
   | "follow_up"
   | "warnings";
 
+export type StructuredMedicationRecord = {
+  name: string;
+  dosage?: string | null;
+  frequency?: string | null;
+  route?: string | null;
+  duration?: string | null;
+  instructions?: string | null;
+  source_text?: string | null;
+};
+
+export type StructuredFollowUpRecord = {
+  type_or_reason: string;
+  recommended_date_or_timeframe?: string | null;
+  instructions?: string | null;
+  provider_or_specialist?: string | null;
+  source_text?: string | null;
+};
+
 export type StructuredExtractionOutput = {
-  medications: string[];
+  medications: Array<string | StructuredMedicationRecord>;
   findings: string[];
   tests: string[];
-  follow_up: string[];
+  follow_up: Array<string | StructuredFollowUpRecord>;
   warnings: string[];
   patient_summary: string;
   uncertainty_notes: string[];
@@ -42,11 +60,29 @@ const MAX_SUMMARY_LENGTH = 1000;
 
 const boundedText = z.string().trim().min(1).max(MAX_FACT_LENGTH);
 
+const medicationRecordSchema = z.object({
+  name: boundedText,
+  dosage: boundedText.nullable().optional(),
+  frequency: boundedText.nullable().optional(),
+  route: boundedText.nullable().optional(),
+  duration: boundedText.nullable().optional(),
+  instructions: boundedText.nullable().optional(),
+  source_text: boundedText.nullable().optional(),
+}).strict();
+
+const followUpRecordSchema = z.object({
+  type_or_reason: boundedText,
+  recommended_date_or_timeframe: boundedText.nullable().optional(),
+  instructions: boundedText.nullable().optional(),
+  provider_or_specialist: boundedText.nullable().optional(),
+  source_text: boundedText.nullable().optional(),
+}).strict();
+
 export const structuredExtractionSchema = z.object({
-  medications: z.array(boundedText).max(MAX_FACT_ITEMS),
+  medications: z.array(z.union([boundedText, medicationRecordSchema])).max(MAX_FACT_ITEMS),
   findings: z.array(boundedText).max(MAX_FACT_ITEMS),
   tests: z.array(boundedText).max(MAX_FACT_ITEMS),
-  follow_up: z.array(boundedText).max(MAX_FACT_ITEMS),
+  follow_up: z.array(z.union([boundedText, followUpRecordSchema])).max(MAX_FACT_ITEMS),
   warnings: z.array(boundedText).max(MAX_FACT_ITEMS),
   patient_summary: z.string().trim().min(1).max(MAX_SUMMARY_LENGTH),
   uncertainty_notes: z.array(boundedText).max(MAX_UNCERTAINTY_NOTES),
@@ -131,6 +167,28 @@ const isFactSupportedBySource = (fact: string, sourceText: string) => {
   return matchedTerms.length / significantTerms.length >= 0.75;
 };
 
+const medicationFactText = (medication: string | StructuredMedicationRecord) =>
+  typeof medication === "string"
+    ? medication
+    : medication.source_text || [
+        medication.name,
+        medication.dosage,
+        medication.frequency,
+        medication.route,
+        medication.duration,
+        medication.instructions,
+      ].filter(Boolean).join(" ");
+
+const followUpFactText = (followUp: string | StructuredFollowUpRecord) =>
+  typeof followUp === "string"
+    ? followUp
+    : followUp.source_text || [
+        followUp.type_or_reason,
+        followUp.recommended_date_or_timeframe,
+        followUp.instructions,
+        followUp.provider_or_specialist,
+      ].filter(Boolean).join(" ");
+
 const hasSupportedOutput = (output: StructuredExtractionOutput, sourceText: string) => {
   const hasFacts = STRUCTURED_EXTRACTION_CATEGORIES.some((category) => output[category].length > 0);
 
@@ -139,7 +197,15 @@ const hasSupportedOutput = (output: StructuredExtractionOutput, sourceText: stri
   }
 
   return STRUCTURED_EXTRACTION_CATEGORIES.every((category) =>
-    output[category].every((fact) => isFactSupportedBySource(fact, sourceText))
+    output[category].every((fact) => {
+      const factText = category === "medications"
+        ? medicationFactText(fact as string | StructuredMedicationRecord)
+        : category === "follow_up"
+          ? followUpFactText(fact as string | StructuredFollowUpRecord)
+          : fact as string;
+
+      return isFactSupportedBySource(factText, sourceText);
+    })
   );
 };
 

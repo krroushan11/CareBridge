@@ -14,6 +14,7 @@ import {
     StructuredExtractionError,
 } from "../services/aiExtractionService";
 import { enqueueDocumentProcessing } from "../services/documentProcessingQueue";
+import { persistDraftCarePlan } from "../services/draftCarePlanService";
 
 const documentIdSchema = z.string().uuid();
 const documentMetadataSchema = z.object({
@@ -191,11 +192,30 @@ export const extractStructuredDocument = async (req: Request, res: Response) => 
     }
 
     const structuredOutput = await extractStructuredInformation(document.extracted_text);
+    const draftCarePlan = await persistDraftCarePlan(
+      document.id,
+      userId,
+      structuredOutput
+    );
+
+    if (!draftCarePlan) {
+      return res.status(409).json({
+        success: false,
+        message: "Medical document is not ready for draft care-plan persistence",
+      });
+    }
 
     return res.status(200).json({
       success: true,
       document_id: document.id,
       extraction: structuredOutput,
+      draft_care_plan: {
+        id: draftCarePlan.id,
+        status: draftCarePlan.status,
+        medication_records: draftCarePlan.medication_records,
+        follow_up_records: draftCarePlan.follow_up_records,
+        updated_at: draftCarePlan.updated_at,
+      },
       disclaimer: MEDICAL_DISCLAIMER,
     });
   } catch (error) {

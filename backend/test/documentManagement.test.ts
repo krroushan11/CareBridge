@@ -24,6 +24,7 @@ import {
     setLlmProviderForTests,
     validateStructuredExtractionOutput,
 } from "../src/services/aiExtractionService";
+import { persistDraftCarePlan } from "../src/services/draftCarePlanService";
 import { createConfiguredLlmProvider } from "../src/services/llmProvider";
 import {
   extractMedicalDocumentText,
@@ -963,6 +964,83 @@ test("structured extraction provider failure returns a safe API error", async ()
     message: "Structured extraction provider unavailable",
   });
   assert.doesNotMatch(JSON.stringify(res.body), /Sensitive raw OCR text|private-storage-key\.pdf/);
+});
+
+test("structured medication and follow-up records persist in an owner-scoped draft care plan", async () => {
+  let queryText = "";
+  let queryValues: unknown[] = [];
+  setQueryMock(async (query, values) => {
+    queryText = query;
+    queryValues = values;
+    return {
+      rows: [{
+        id: "draft-a",
+        document_id: ownedDocumentId,
+        user_id: "user-a",
+        status: "draft",
+        medication_records: [{
+          name: "Metformin",
+          dosage: "500 mg",
+          frequency: "twice daily",
+          source_text: "Metformin 500 mg twice daily",
+        }],
+        follow_up_records: [{
+          type_or_reason: "routine review",
+          recommended_date_or_timeframe: "two weeks",
+          instructions: "Return in two weeks",
+          source_text: "Return in two weeks",
+        }],
+        updated_at: new Date(),
+      }],
+    };
+  });
+
+  const draft = await persistDraftCarePlan(ownedDocumentId, "user-a", {
+    medications: [{
+      name: "Metformin",
+      dosage: "500 mg",
+      frequency: "twice daily",
+      source_text: "Metformin 500 mg twice daily",
+    }],
+    findings: [],
+    tests: [],
+    follow_up: [{
+      type_or_reason: "routine review",
+      recommended_date_or_timeframe: "two weeks",
+      instructions: "Return in two weeks",
+      source_text: "Return in two weeks",
+    }],
+    warnings: [],
+    patient_summary: "The document lists metformin and a routine review.",
+    uncertainty_notes: [],
+  });
+
+  assert.equal(draft?.status, "draft");
+  assert.match(queryText, /INSERT INTO draft_care_plans/);
+  assert.match(queryText, /processing_status = 'completed'/);
+  assert.match(queryText, /ON CONFLICT \(document_id\) DO UPDATE/);
+  assert.deepEqual(queryValues.slice(0, 2), [ownedDocumentId, "user-a"]);
+  assert.match(String(queryValues[2]), /Metformin/);
+  assert.match(String(queryValues[3]), /routine review/);
+});
+
+test("empty extraction creates no fabricated medication or follow-up records", async () => {
+  let medicationRecords = "";
+  let followUpRecords = "";
+  setQueryMock(async (_query, values) => {
+    medicationRecords = String(values[2]);
+    followUpRecords = String(values[3]);
+    return { rows: [{ id: "draft-empty", status: "draft" }] };
+  });
+
+  await persistDraftCarePlan(
+    ownedDocumentId,
+    "user-a",
+    emptyStructuredExtractionOutput()
+  );
+
+  assert.equal(medicationRecords, "[]");
+  assert.equal(followUpRecords, "[]");
 });
 
 test("users cannot list another user's documents", async () => {

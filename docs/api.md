@@ -96,6 +96,17 @@ Uploads return after the database record is created with `uploaded` status. A Po
 
 PDFs use native text extraction first and fall back to OCR when extracted text is below the readability threshold. JPEG and PNG files use OCR directly. Tesseract languages are configurable with the `OCR_LANGUAGES` environment setting using comma-separated language codes such as `eng,spa`; English remains the default and is used as a safe fallback when configured language data is unavailable.
 
+After a completed document is successfully extracted, `GET /api/documents/:id/extract`
+also creates or updates one owner-scoped DRAFT care plan for that document.
+Medication records support name, dosage, frequency, route, duration,
+instructions, and source text when explicitly returned by the provider.
+Follow-up records support type/reason, date or timeframe, instructions,
+provider/specialist, and source text when explicitly returned. Missing fields
+remain unavailable; the service does not infer medical information. Repeating
+the extraction is idempotent for the document's draft care plan. Failed,
+malformed, incomplete, or non-owner extraction requests do not create a draft.
+Draft plans are never automatically approved, activated, published, or finalized.
+
 ## Analysis verification
 
 `POST /api/analysis/:id/confirm`
@@ -117,6 +128,21 @@ Requires authentication and a validated reviewed extraction body:
 ```
 
 The operation is owner-scoped and persists the verified care plan.
+
+## AI structured extraction and draft care plans
+
+The structured extraction endpoint reuses the completed-document flow:
+
+`GET /api/documents/:id/extract`
+
+It validates the provider response, preserves the anti-hallucination checks,
+and atomically upserts `draft_care_plans` with structured medication and
+follow-up records. The migration
+`backend/database/migrations/20260916_create_draft_care_plans.sql` creates the
+draft table, JSONB record collections, owner/document foreign keys, draft-only
+status constraint, and owner/update index. The existing
+`verified_care_plans` workflow remains separate and requires explicit human
+confirmation.
 
 ## Database setup
 
