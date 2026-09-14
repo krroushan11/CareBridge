@@ -6,6 +6,7 @@ import analysisRoutes from "./routes/analysisRoutes";
 import authRoutes from "./routes/authRoutes";
 import documentRoutes from "./routes/documentRoutes";
 import { validateJwtSecret } from "./middlewares/authMiddleware";
+import { startDocumentProcessingWorker } from "./services/documentProcessingQueue";
 
 dotenv.config();
 
@@ -23,6 +24,8 @@ app.use(express.json());
 app.use("/api/auth", authRoutes);
 app.use("/api/documents", documentRoutes);
 app.use("/api/analysis", analysisRoutes);
+
+startDocumentProcessingWorker();
 
 const PORT = process.env.PORT || 5000;
 

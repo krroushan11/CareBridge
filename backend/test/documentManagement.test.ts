@@ -1,15 +1,20 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { pool } from "../src/config/database";
 import {
+    deleteDocument,
+    downloadDocument,
     extractStructuredDocument,
+    getDocumentProcessingStatus,
     listDocuments,
+    updateDocumentMetadata,
     uploadDocument,
 } from "../src/controllers/documentController";
 import { authenticateToken } from "../src/middlewares/authMiddleware";
+import { getPrivateDocumentPath } from "../src/middlewares/documentUploadMiddleware";
 import { MAX_DOCUMENT_SIZE_BYTES } from "../src/middlewares/documentUploadMiddleware";
 import {
     emptyStructuredExtractionOutput,
@@ -20,7 +25,9 @@ import {
     validateStructuredExtractionOutput,
 } from "../src/services/aiExtractionService";
 import { createConfiguredLlmProvider } from "../src/services/llmProvider";
-import { processMedicalDocument } from "../src/services/documentExtractionService";
+import { MAX_PROCESSING_ATTEMPTS, processMedicalDocument } from "../src/services/documentExtractionService";
+
+const ownedDocumentId = "11111111-1111-4111-8111-111111111111";
 
 const originalQuery = pool.query.bind(pool);
 
@@ -181,6 +188,110 @@ test("authenticated document listing is scoped to the requesting user", async ()
   assert.doesNotMatch(listQuery, /storage_key/);
 });
 
+test("owners can download private documents without exposing storage metadata", async () => {
+  const storageKey = "phase4-download-test.pdf";
+  const privatePath = getPrivateDocumentPath(storageKey);
+  await writeFile(privatePath, "%PDF-1.7\n");
+  let queryValues: unknown[] = [];
+  const res = createResponse();
+  let sentPath = "";
+  let sentOptions: any;
+  res.sendFile = (path: string, options: unknown, callback: () => void) => {
+    sentPath = path;
+    sentOptions = options;
+    callback();
+  };
+
+  setQueryMock(async (_query, values) => {
+    queryValues = values;
+    return { rows: [{ storage_key: storageKey, mime_type: "application/pdf", original_filename: "record.pdf" }] };
+  });
+
+  await downloadDocument({ user: { id: "user-a" }, params: { id: ownedDocumentId } } as any, res);
+
+  assert.deepEqual(queryValues, [ownedDocumentId, "user-a"]);
+  assert.equal(sentPath, privatePath);
+  assert.equal(sentOptions.headers["Content-Type"], "application/pdf");
+  assert.match(sentOptions.headers["Content-Disposition"], /attachment/);
+  await rm(privatePath, { force: true });
+});
+
+test("unauthenticated users cannot download a document", async () => {
+  const res = createResponse();
+  await downloadDocument({ params: { id: ownedDocumentId } } as any, res);
+  assert.equal(res.statusCode, 401);
+});
+
+test("non-owners cannot download, update, delete, or inspect documents", async () => {
+  setQueryMock(async () => ({ rows: [] }));
+
+  for (const handler of [downloadDocument, getDocumentProcessingStatus, deleteDocument]) {
+    const res = createResponse();
+    if (handler === downloadDocument) res.sendFile = () => undefined;
+    await handler({ user: { id: "user-b" }, params: { id: ownedDocumentId } } as any, res);
+    assert.equal(res.statusCode, 404);
+  }
+
+  const updateRes = createResponse();
+  await updateDocumentMetadata({
+    user: { id: "user-b" },
+    params: { id: ownedDocumentId },
+    body: { original_filename: "renamed.pdf" },
+  } as any, updateRes);
+  assert.equal(updateRes.statusCode, 404);
+});
+
+test("owners can update safe document metadata and invalid names are rejected", async () => {
+  let values: unknown[] = [];
+  setQueryMock(async (_query, queryValues) => {
+    values = queryValues;
+    return { rows: [{ id: ownedDocumentId, original_filename: "renamed.pdf", processing_status: "uploaded" }] };
+  });
+
+  const res = createResponse();
+  await updateDocumentMetadata({
+    user: { id: "user-a" },
+    params: { id: ownedDocumentId },
+    body: { original_filename: "renamed.pdf" },
+  } as any, res);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(values, ["renamed.pdf", ownedDocumentId, "user-a"]);
+
+  const invalidRes = createResponse();
+  await updateDocumentMetadata({
+    user: { id: "user-a" },
+    params: { id: ownedDocumentId },
+    body: { original_filename: "../unsafe.pdf" },
+  } as any, invalidRes);
+  assert.equal(invalidRes.statusCode, 400);
+});
+
+test("owners can retrieve safe processing status", async () => {
+  setQueryMock(async () => ({ rows: [{ id: ownedDocumentId, processing_status: "uploaded", processing_attempts: 1 }] }));
+  const res = createResponse();
+  await getDocumentProcessingStatus({ user: { id: "user-a" }, params: { id: ownedDocumentId } } as any, res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.document.id, ownedDocumentId);
+  assert.equal(res.body.document.storage_key, undefined);
+});
+
+test("owners can delete their private document after an owner-scoped database lookup", async () => {
+  const storageKey = "phase4-delete-test.pdf";
+  const privatePath = getPrivateDocumentPath(storageKey);
+  await writeFile(privatePath, "%PDF-1.7\n");
+  let queries = 0;
+  setQueryMock(async (_query, values) => {
+    queries += 1;
+    assert.deepEqual(values, [ownedDocumentId, "user-a"]);
+    return queries === 1 ? { rows: [{ storage_key: storageKey }] } : { rows: [{ id: ownedDocumentId }] };
+  });
+
+  const res = createResponse();
+  await deleteDocument({ user: { id: "user-a" }, params: { id: ownedDocumentId } } as any, res);
+  assert.equal(res.statusCode, 200);
+  await assert.rejects(() => access(privatePath));
+});
+
 test("processMedicalDocument stores normalized text and deterministic completed metadata", async () => {
   let firstUpdateSeen = false;
   let secondUpdateSeen = false;
@@ -217,6 +328,46 @@ test("processMedicalDocument stores normalized text and deterministic completed 
   assert.equal(secondValues[1], "pdf_text");
   assert.equal(secondValues[2], "document-a");
   assert.equal(secondValues[3], "user-a");
+});
+
+test("transient processing failures are requeued with bounded retry metadata", async () => {
+  let retryValues: unknown[] = [];
+  setQueryMock(async (query, values) => {
+    if (query.includes("RETURNING id, processing_attempts")) return { rows: [{ id: ownedDocumentId, processing_attempts: 1 }] };
+    if (query.includes("processing_retry_scheduled")) {
+      retryValues = values;
+      return { rows: [{ id: ownedDocumentId }] };
+    }
+    return { rows: [] };
+  });
+
+  await processMedicalDocument(
+    { id: ownedDocumentId, userId: "user-a", storageKey: "missing.pdf", mimeType: "application/pdf" },
+    async () => { throw new Error("temporary OCR timeout"); }
+  );
+
+  assert.equal(retryValues[1], ownedDocumentId);
+  assert.equal(retryValues[2], "user-a");
+});
+
+test("processing is marked failed after the retry limit", async () => {
+  let failed = false;
+  setQueryMock(async (query) => {
+    if (query.includes("RETURNING id, processing_attempts")) {
+      return { rows: [{ id: ownedDocumentId, processing_attempts: MAX_PROCESSING_ATTEMPTS }] };
+    }
+    if (query.includes("processing_status = 'failed'")) {
+      failed = true;
+    }
+    return { rows: [] };
+  });
+
+  await processMedicalDocument(
+    { id: ownedDocumentId, userId: "user-a", storageKey: "missing.pdf", mimeType: "application/pdf" },
+    async () => { throw new Error("temporary OCR timeout"); }
+  );
+
+  assert.equal(failed, true);
 });
 
 test("processMedicalDocument marks a row failed when extraction cannot produce normalized text", async () => {

@@ -87,6 +87,13 @@ All endpoints require authentication.
 - `GET /api/documents` — list the authenticated user's documents and safe processing metadata.
 - `GET /api/documents/:id/extract` — generate structured information after processing completes.
 
+- `GET /api/documents/:id/download` — download an owner-scoped private document with its stored MIME type.
+- `PATCH /api/documents/:id` — rename an owner-scoped document with `{ "original_filename": "record.pdf" }`.
+- `DELETE /api/documents/:id` — delete an owner-scoped document and its private local file.
+- `GET /api/documents/:id/status` — retrieve owner-scoped processing status, timestamps, safe failure state, and retry metadata.
+
+Uploads return after the database record is created with `uploaded` status. The built-in PostgreSQL-backed worker claims queued records outside the HTTP request, processes them asynchronously, and records `processing`, `completed`, or `failed`. Transient processing failures are retried up to three total attempts with bounded backoff. This worker runs in the backend process; multi-instance production deployments should run a dedicated worker process or use shared queue-worker orchestration.
+
 ## Analysis verification
 
 `POST /api/analysis/:id/confirm`

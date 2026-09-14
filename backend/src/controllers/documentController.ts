@@ -1,9 +1,11 @@
 import { Request, Response } from "express";
-import { open, unlink } from "fs/promises";
+import { access, constants, open, unlink } from "fs/promises";
 import { basename } from "path";
+import { z } from "zod";
 import { pool } from "../config/database";
 import {
     isAllowedMedicalDocument,
+    getPrivateDocumentPath,
     MAX_DOCUMENT_SIZE_BYTES,
 } from "../middlewares/documentUploadMiddleware";
 import {
@@ -11,7 +13,20 @@ import {
     MEDICAL_DISCLAIMER,
     StructuredExtractionError,
 } from "../services/aiExtractionService";
-import { processMedicalDocument } from "../services/documentExtractionService";
+import { enqueueDocumentProcessing } from "../services/documentProcessingQueue";
+
+const documentIdSchema = z.string().uuid();
+const documentMetadataSchema = z.object({
+  original_filename: z.string().trim().min(1).max(255).refine(
+    (value) => basename(value) === value && !/[\u0000-\u001f\\/]/.test(value),
+    "Invalid document filename"
+  ),
+}).strict();
+
+const isValidDocumentId = (documentId: string) => documentIdSchema.safeParse(documentId).success;
+
+const safeDownloadFilename = (filename: string) =>
+  basename(filename).replace(/["\\\r\n]/g, "_") || "medical-document";
 
 const removeUploadedFile = async (filePath: string) => {
   try {
@@ -109,12 +124,7 @@ export const uploadDocument = async (req: Request, res: Response) => {
 
     const createdDocument = documentResult.rows[0];
 
-    await processMedicalDocument({
-      id: createdDocument.id,
-      userId,
-      storageKey: file.filename,
-      mimeType: file.mimetype,
-    });
+    enqueueDocumentProcessing();
 
     return res.status(201).json({
       success: true,
@@ -195,6 +205,167 @@ export const extractStructuredDocument = async (req: Request, res: Response) => 
       success: false,
       message: "Failed to build structured extraction",
     });
+  }
+};
+
+export const downloadDocument = async (req: Request, res: Response) => {
+  const userId = (req as any).user?.id;
+  const documentId = typeof req.params.id === "string" ? req.params.id : "";
+
+  if (!userId) {
+    return res.status(401).json({ success: false, message: "Authentication required" });
+  }
+
+  if (!isValidDocumentId(documentId)) {
+    return res.status(404).json({ success: false, message: "Medical document not found" });
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT storage_key, mime_type, original_filename
+       FROM medical_documents
+       WHERE id = $1 AND user_id = $2`,
+      [documentId, userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Medical document not found" });
+    }
+
+    const document = result.rows[0];
+    const privatePath = getPrivateDocumentPath(document.storage_key);
+
+    try {
+      await access(privatePath, constants.R_OK);
+    } catch {
+      return res.status(404).json({ success: false, message: "Medical document not found" });
+    }
+
+    return res.sendFile(privatePath, {
+      headers: {
+        "Content-Type": document.mime_type,
+        "Content-Disposition": `attachment; filename="${safeDownloadFilename(document.original_filename)}"`,
+      },
+      dotfiles: "deny",
+    }, (error?: Error) => {
+      if (error && !res.headersSent) {
+        res.status(404).json({ success: false, message: "Medical document not found" });
+      }
+    });
+  } catch {
+    return res.status(500).json({ success: false, message: "Failed to download medical document" });
+  }
+};
+
+export const updateDocumentMetadata = async (req: Request, res: Response) => {
+  const userId = (req as any).user?.id;
+  const documentId = typeof req.params.id === "string" ? req.params.id : "";
+  const parsed = documentMetadataSchema.safeParse(req.body);
+
+  if (!userId) {
+    return res.status(401).json({ success: false, message: "Authentication required" });
+  }
+
+  if (!isValidDocumentId(documentId)) {
+    return res.status(404).json({ success: false, message: "Medical document not found" });
+  }
+
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, message: "Invalid document metadata" });
+  }
+
+  try {
+    const result = await pool.query(
+      `UPDATE medical_documents
+       SET original_filename = $1
+       WHERE id = $2 AND user_id = $3
+       RETURNING id, original_filename, mime_type, file_size, processing_status, created_at`,
+      [parsed.data.original_filename, documentId, userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Medical document not found" });
+    }
+
+    return res.status(200).json({ success: true, message: "Medical document updated successfully", document: result.rows[0] });
+  } catch {
+    return res.status(500).json({ success: false, message: "Failed to update medical document" });
+  }
+};
+
+export const getDocumentProcessingStatus = async (req: Request, res: Response) => {
+  const userId = (req as any).user?.id;
+  const documentId = typeof req.params.id === "string" ? req.params.id : "";
+
+  if (!userId) {
+    return res.status(401).json({ success: false, message: "Authentication required" });
+  }
+
+  if (!isValidDocumentId(documentId)) {
+    return res.status(404).json({ success: false, message: "Medical document not found" });
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT id, processing_status, processing_method, processing_started_at,
+              processing_completed_at, processing_error, processing_attempts, next_retry_at
+       FROM medical_documents
+       WHERE id = $1 AND user_id = $2`,
+      [documentId, userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Medical document not found" });
+    }
+
+    return res.status(200).json({ success: true, document: result.rows[0] });
+  } catch {
+    return res.status(500).json({ success: false, message: "Failed to fetch document processing status" });
+  }
+};
+
+export const deleteDocument = async (req: Request, res: Response) => {
+  const userId = (req as any).user?.id;
+  const documentId = typeof req.params.id === "string" ? req.params.id : "";
+
+  if (!userId) {
+    return res.status(401).json({ success: false, message: "Authentication required" });
+  }
+
+  if (!isValidDocumentId(documentId)) {
+    return res.status(404).json({ success: false, message: "Medical document not found" });
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT storage_key FROM medical_documents WHERE id = $1 AND user_id = $2`,
+      [documentId, userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Medical document not found" });
+    }
+
+    try {
+      await unlink(getPrivateDocumentPath(result.rows[0].storage_key));
+    } catch (error: any) {
+      if (error?.code !== "ENOENT") {
+        return res.status(500).json({ success: false, message: "Failed to delete medical document" });
+      }
+    }
+
+    const deleted = await pool.query(
+      `DELETE FROM medical_documents WHERE id = $1 AND user_id = $2 RETURNING id`,
+      [documentId, userId]
+    );
+
+    if (deleted.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Medical document not found" });
+    }
+
+    return res.status(200).json({ success: true, message: "Medical document deleted successfully" });
+  } catch {
+    return res.status(500).json({ success: false, message: "Failed to delete medical document" });
   }
 };
 

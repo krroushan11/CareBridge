@@ -51,6 +51,8 @@ CREATE TABLE IF NOT EXISTS medical_documents (
     processing_method VARCHAR(20)
         CHECK (processing_method IN ('pdf_text', 'ocr')),
     processing_error TEXT,
+    processing_attempts INTEGER NOT NULL DEFAULT 0 CHECK (processing_attempts >= 0),
+    next_retry_at TIMESTAMP,
     processing_started_at TIMESTAMP,
     processing_completed_at TIMESTAMP,
     extracted_text TEXT,
@@ -59,6 +61,9 @@ CREATE TABLE IF NOT EXISTS medical_documents (
 
 CREATE INDEX IF NOT EXISTS idx_medical_documents_user_id_created_at
     ON medical_documents (user_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_medical_documents_processing_queue
+    ON medical_documents (processing_status, next_retry_at, created_at);
 
 -- Human-verified care plans derived from owner-reviewed document extraction.
 CREATE TABLE IF NOT EXISTS verified_care_plans (

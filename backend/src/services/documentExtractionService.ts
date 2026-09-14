@@ -6,6 +6,7 @@ import { getPrivateDocumentPath } from "../middlewares/documentUploadMiddleware"
 
 const MINIMUM_PDF_TEXT_LENGTH = 20;
 const MAX_PDF_OCR_PAGES = 20;
+export const MAX_PROCESSING_ATTEMPTS = 3;
 
 export type ExtractionResult = {
   text: string;
@@ -26,6 +27,13 @@ export type ProcessingDocument = {
 };
 
 const normalizeExtractedText = (text: string) => text.replace(/\s+/g, " ").trim();
+
+const isRetryableProcessingError = (error: unknown) => {
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  return /temporary|timeout|timed out|econn|eio|ebusy|emfile|enfile/.test(message);
+};
+
+const retryDelayMs = (attempt: number) => 60_000 * 2 ** Math.max(0, attempt - 1);
 
 export const extractPdfText = async (filePath: string) => {
   const parser = new PDFParse({ data: await readFile(filePath) });
@@ -116,6 +124,8 @@ export const processMedicalDocument = async (
   document: ProcessingDocument,
   extractor = extractMedicalDocumentText
 ) => {
+  let attempt = 0;
+
   try {
     const processingResult = await pool.query(
       `UPDATE medical_documents
@@ -124,17 +134,21 @@ export const processMedicalDocument = async (
            processing_completed_at = NULL,
            processing_method = NULL,
            processing_error = NULL,
-           extracted_text = NULL
+           extracted_text = NULL,
+           next_retry_at = NULL,
+           processing_attempts = processing_attempts + 1
        WHERE id = $1
          AND user_id = $2
          AND processing_status = 'uploaded'
-       RETURNING id`,
+       RETURNING id, processing_attempts`,
       [document.id, document.userId]
     );
 
     if (processingResult.rows.length === 0) {
       return;
     }
+
+    attempt = Number(processingResult.rows[0].processing_attempts);
 
     const extraction = await extractor(
       getPrivateDocumentPath(document.storageKey),
@@ -157,15 +171,35 @@ export const processMedicalDocument = async (
          AND processing_status = 'processing'`,
       [normalizeExtractedText(extraction.text), extraction.method, document.id, document.userId]
     );
-  } catch {
+  } catch (error) {
     try {
+      const shouldRetry = attempt > 0 &&
+        attempt < MAX_PROCESSING_ATTEMPTS &&
+        isRetryableProcessingError(error);
+
+      if (shouldRetry) {
+        await pool.query(
+          `UPDATE medical_documents
+           SET processing_status = 'uploaded',
+               processing_method = NULL,
+               processing_error = 'processing_retry_scheduled',
+               next_retry_at = $1
+           WHERE id = $2
+             AND user_id = $3
+             AND processing_status = 'processing'`,
+          [new Date(Date.now() + retryDelayMs(attempt)), document.id, document.userId]
+        );
+        return;
+      }
+
       await pool.query(
         `UPDATE medical_documents
        SET extracted_text = NULL,
            processing_status = 'failed',
            processing_method = NULL,
            processing_completed_at = NOW(),
-           processing_error = 'processing_failed'
+           processing_error = 'processing_failed',
+           next_retry_at = NULL
        WHERE id = $1
          AND user_id = $2
          AND processing_status = 'processing'`,

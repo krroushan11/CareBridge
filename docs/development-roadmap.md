@@ -13,6 +13,9 @@
 - [x] Document-management tests
 - [x] TypeScript validation
 - [x] Database migration applied
+- [x] Owner-scoped document download, rename, delete, and processing-status APIs
+- [x] Asynchronous PostgreSQL-backed document processing worker
+- [x] Bounded retry and stale-processing recovery
 
 ## Phase 1 — Document Intelligence Foundation
 - [ ] Define processing lifecycle
