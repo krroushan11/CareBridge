@@ -1,116 +1,185 @@
 # CareBridge AI
 
-## Phase 5 - PDF Text Extraction / OCR
+## Phase 6 - AI Structured Extraction
 
 **Status: COMPLETE**
 
-Phase 5 provides asynchronous medical-document text extraction for native PDFs,
-scanned PDFs, JPEG images, and PNG images. Processing is authenticated and
-owner-scoped throughout the document lifecycle.
+Phase 6 adds safe, validated AI structured extraction for completed medical
+documents and automatically persists the result as an owner-scoped DRAFT
+care plan.
 
-## Completed Features
+## Objective
 
-- Native PDF text extraction.
-- `pdf-parse` integration.
-- OCR fallback when native PDF text is insufficient.
-- PDF page rendering for OCR.
-- Tesseract OCR.
-- JPEG OCR.
-- PNG OCR.
-- OCR page limit.
-- Whitespace normalization.
-- Processing status tracking.
-- Processing lifecycle:
-  `uploaded` -> `processing` -> `completed` or `failed`.
-- Processing method tracking with `pdf_text` and `ocr`.
-- Configurable multilingual OCR.
-- English OCR fallback when configured language data is unavailable.
-- PostgreSQL-backed background processing queue.
-- Concurrent-safe queue claiming.
-- Stale processing recovery.
-- Bounded retry policy with exponential backoff for transient failures.
-- Dedicated owner-scoped processing status endpoint.
+Convert document-derived text into structured, reviewable medical information
+without inventing facts, weakening authentication, or bypassing document
+ownership checks. Draft care plans remain unapproved until a separate explicit
+review and confirmation step.
+
+## AI Structured Extraction
+
+The existing document extraction flow produces one validated JSON object with:
+
+- `medications`
+- `findings`
+- `tests`
+- `follow_up`
+- `warnings`
+- `patient_summary`
+- `uncertainty_notes`
+
+The implementation supports:
+
+- Medicine extraction.
+- Findings extraction.
+- Tests extraction.
+- Follow-up extraction.
+- Strict structured JSON output.
+- OpenAI-compatible provider adapter.
+- Configurable provider URL through `AI_BASE_URL`.
+- Configurable model through `AI_MODEL`.
+- Environment-based API key through `AI_API_KEY`.
+- Structured JSON request format with a strict response schema.
+- Safe provider error handling.
+- Malformed-response validation and rejection.
+- Completed-processing requirement before AI extraction.
+- Document ownership checks on every extraction request.
+
+Provider failures and malformed responses return safe application errors without
+exposing API keys, provider responses, raw document contents, or internal
+implementation details.
+
+## Structured Records
+
+### Medication Records
+
+Medication entries can preserve only information explicitly returned by the AI
+provider, including:
+
+- Name
+- Dosage
+- Frequency
+- Route
+- Duration
+- Instructions
+- Source/reference text
+
+### Follow-Up Records
+
+Follow-up entries can preserve only information explicitly returned by the AI
+provider, including:
+
+- Follow-up type or reason
+- Recommended date or timeframe
+- Instructions
+- Provider or specialist
+- Source/reference text
+
+Missing fields remain unavailable. The service does not infer medication,
+dosage, diagnosis, treatment, provider, or follow-up information.
+
+## Automatic Draft Care-Plan Persistence
+
+After successful extraction for an authenticated user's completed document, the
+system creates or updates one owner-scoped DRAFT care plan for that document.
+The draft stores:
+
+- The validated structured extraction.
+- Structured medication records.
+- Structured follow-up records.
+- The explicit `draft` status.
+
+Persistence is idempotent for repeated extraction requests because each
+document has at most one draft care plan. The database operation checks both
+document ownership and `processing_status = 'completed'`. Draft care plans are
+never automatically approved, activated, published, or finalized.
+
+Empty extraction results produce empty record collections and do not fabricate
+medical data. Failed or malformed AI responses do not create or update a
+draft.
 
 ## API
 
-### Processing Status
+### Structured Document Extraction
 
 ```http
-GET /api/documents/:id/status
+GET /api/documents/:id/extract
 ```
 
-This authenticated endpoint returns safe processing metadata for a document
-owned by the current user, including its ID, status, processing method,
-attempt/retry information, safe error state, and relevant timestamps.
+Requirements and behavior:
 
-Document processing is asynchronous: uploads return after the document is
-queued, while the background worker performs PDF extraction or OCR separately.
-All document access and processing status queries are owner-scoped.
+- Requires JWT authentication.
+- Accepts only a document owned by the authenticated user.
+- Requires document processing to be complete.
+- Returns validated structured extraction data and the persisted DRAFT care
+  plan metadata.
+- Does not expose raw extracted text, storage keys, filesystem paths, API keys,
+  or provider error details.
 
-## Phase 5 Architecture
+### Explicit Reviewed Confirmation
+
+```http
+POST /api/analysis/:id/confirm
+```
+
+This existing owner-scoped endpoint remains a separate explicit confirmation
+workflow. AI extraction creates only a DRAFT care plan; it does not confirm or
+publish a care plan automatically.
+
+## Database and Migration Changes
+
+Phase 6 adds the PostgreSQL migration:
 
 ```text
-Upload
-  -> queued processing
-  -> PDF text extraction / OCR
-  -> processing status
-  -> completed or failed
+backend/database/migrations/20260916_create_draft_care_plans.sql
 ```
 
-Native PDF text extraction is attempted first. PDFs that do not contain
-sufficient readable text use rendered-page OCR, while JPEG and PNG documents
-use OCR directly. The worker safely claims queued jobs, recovers stale
-processing records, and applies bounded retries to eligible transient failures.
+The migration creates `draft_care_plans` with:
 
-## Security
+- UUID primary key.
+- Unique document reference to prevent duplicate drafts.
+- Foreign keys to the document and owner.
+- Draft-only status constraint.
+- JSONB medication records.
+- JSONB follow-up records.
+- Validated extraction JSONB.
+- Creation and update timestamps.
+- Owner/update index.
 
-- JWT authentication protects document processing and status access.
-- Database queries are scoped to the authenticated document owner.
-- Document IDs are validated as UUIDs before database access.
-- Supported file types and content signatures are validated before processing.
-- Private document storage details and filesystem paths are never exposed.
-- Processing errors are represented by safe status values rather than internal
-  document or storage information.
+The canonical database schema representation is updated accordingly.
 
-## Validation and Testing
+## Security and Ownership
 
-Phase 5 verification completed successfully:
+- JWT authentication is required for extraction and confirmation operations.
+- Every document query is scoped to the authenticated owner.
+- Extraction requires a completed, owner-owned document.
+- Draft care plans retain both document and user ownership references.
+- UUID document identifiers are used by the document API.
+- AI output is schema-validated before persistence.
+- Anti-hallucination checks require extracted facts to be supported by source
+  text.
+- The provider is instructed not to invent medicines, dosages, diagnoses,
+  results, dates, or instructions.
+- Sensitive document content and provider credentials are not returned in API
+  responses or ordinary error messages.
+- Existing authentication, RBAC, and verified-care-plan behavior remains
+  unchanged.
 
-- TypeScript check passed.
-- Backend build passed.
-- Document management and OCR tests passed.
-- Multilingual OCR configuration test passed.
-- Background queue completion test passed.
-- Concurrent-safe queue claim test passed.
-- Stale processing recovery test passed.
-- Retry and permanent failure tests passed.
-- Processing status and owner-isolation tests passed.
-- Authentication/RBAC regression tests passed.
-- Analysis/verification regression tests passed.
-- Reset authorization regression tests passed.
-- `git diff --check` passed.
+## Validation and Test Results
 
-## Phase 6 - AI Structured Extraction
+Phase 6 verification passed:
 
-**Status: CORE IMPLEMENTED**
-
-Phase 6 adds validated structured medication and follow-up records to the
-completed-document extraction flow. `GET /api/documents/:id/extract` remains
-authenticated and owner-scoped. After successful extraction, it automatically
-creates or updates one DRAFT care plan for the document owner.
-
-Medication records preserve explicitly returned fields such as name, dosage,
-frequency, route, duration, instructions, and source text. Follow-up records
-preserve explicitly returned type/reason, date or timeframe, instructions,
-provider/specialist, and source text. Missing information remains unavailable;
-the service does not invent medical data.
-
-Draft persistence is idempotent and atomic at the database statement level.
-Drafts remain explicitly marked `draft` and are never automatically approved,
-activated, published, or finalized. The migration
-`backend/database/migrations/20260916_create_draft_care_plans.sql` adds the
-owner-scoped draft care-plan storage.
-
-## Next Phase
-
-The next phase has not been defined in the current project roadmap.
+- Backend TypeScript build.
+- Structured medication persistence tests.
+- Structured follow-up persistence tests.
+- Automatic DRAFT care-plan creation tests.
+- Idempotent repeated-extraction persistence tests.
+- Empty-extraction safety tests.
+- Document-owner isolation tests.
+- Authentication and RBAC regression tests.
+- Failed and malformed AI response safety tests.
+- Incomplete/unprocessed document rejection tests.
+- Transactional/partial-persistence safety coverage.
+- Existing document management and extraction tests.
+- Existing analysis/verification regression tests.
+- Existing reset authorization regression tests.
+- `git diff --check`.
