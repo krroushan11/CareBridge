@@ -113,3 +113,19 @@ One milestone at a time: document requirement → implement → TypeScript/build
 **Care relationships and clinician workflow.**
 Do not grant caregiver or doctor access to patient resources until explicit,
 owner-approved relationship records and access rules are designed and tested.
+
+## Phase 8 - Human Verification
+
+Status: **[✓] IMPLEMENTED**
+
+- [✓] Complete User Verification UI
+- [✓] Edit Before Finalization UI
+- [✓] Version History
+- [✓] Review/Audit History
+- [✓] Clinician Review Workflow
+
+The document owner reviews and edits validated extraction before confirmation.
+Finalized versions are retained, review actions are owner-scoped in an audit
+history, and clinician review is limited to doctor-role users explicitly
+selected by the document owner. AI output remains informational and is never
+automatically treated as medical advice or clinician approval.

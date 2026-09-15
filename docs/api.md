@@ -129,6 +129,34 @@ Requires authentication and a validated reviewed extraction body:
 
 The operation is owner-scoped and persists the verified care plan.
 
+### Human verification review
+
+- `GET /api/analysis/:id/review` — authenticated document-owner review payload.
+- `PUT /api/analysis/:id/review` — validate and save owner edits to the
+  document draft. The strict Phase 7 schema and source-support checks are
+  applied before persistence.
+- `GET /api/analysis/:id/versions` — owner-scoped finalized version history.
+- `GET /api/analysis/:id/audit` — owner-scoped verification and review events.
+
+Confirmation creates a new immutable version in
+`verified_care_plan_versions`; older versions are retained and only the newest
+version is marked current. Audit metadata contains identifiers and safe action
+context only, never raw document text, credentials, tokens, or provider
+secrets.
+
+### Clinician review
+
+- `POST /api/analysis/:id/clinician-review` — an owner submits a verified plan
+  to a selected doctor account (`clinician_id`).
+- `GET /api/analysis/clinician/reviews` — doctor-role users see only reviews
+  assigned to their account.
+- `PATCH /api/analysis/clinician/reviews/:reviewId` — assigned doctors can set
+  `approved`, `rejected`, or `changes_requested`, with an optional note.
+
+Clinician actions require a signed JWT with the `doctor` role and an assigned
+review row. Approval does not remove the medical disclaimer or convert AI
+output into a diagnosis.
+
 ## AI structured extraction and draft care plans
 
 The structured extraction endpoint reuses the completed-document flow:

@@ -1,117 +1,294 @@
-# CareBridge AI - Phase 7
+# CareBridge AI - Phase 8
+## Human Verification
 
-## Phase 7 - Schema Validation & AI Safety
+**Status: ✅ IMPLEMENTED**
 
-## Objective
+CareBridge AI Phase 8 adds a secure human-verification workflow for
+document-derived AI extraction. AI output remains untrusted and informational
+until the authenticated document owner reviews, optionally edits, validates,
+and confirms it. Confirmed care-plan versions are retained, verification
+actions are auditable, and owners can submit verified information to an
+authorized doctor for review.
 
-Phase 7 treats AI-generated medical extraction as untrusted input. Every
-structured response is validated before acceptance, checked against the source
-document, and handled safely without fabricating unsupported medical
-information or exposing sensitive data.
+The existing JWT authentication, RBAC, document ownership checks, PDF/OCR
+processing, AI extraction, and Phase 7 Zod/source-support validation remain in
+place.
 
-## Implementation Status
+## Human Verification Workflow
 
-**[✓] IMPLEMENTED**
+The implemented workflow is:
 
-All Phase 7 checklist requirements are complete.
+```text
+Completed document
+        ↓
+AI structured extraction
+        ↓
+Owner review and edit
+        ↓
+Strict schema and source-support validation
+        ↓
+Owner confirmation
+        ↓
+Verified care-plan version
+        ↓
+Optional clinician review
+        ↓
+Approved / rejected / changes requested
+```
 
-## Implemented Features
+The UI clearly states that extracted information is informational only. It
+does not present AI output as a diagnosis or as medical advice.
 
-- Zod strict schema validation.
-- Required extraction categories.
-- Data type validation.
-- Maximum item counts.
-- Field length restrictions.
-- Unexpected field rejection.
-- Source-support validation.
-- Empty-source safe behavior.
-- AI disclaimer.
-- No invented medicines.
-- No invented diagnoses.
-- No invented test results.
-- No invented dates.
-- Sensitive data protection in errors.
-- Structured medication dosage validation.
-- Medication frequency validation.
-- Medication duration validation.
-- Medication route validation.
-- Structured follow-up date, date-time, and timeframe validation.
-- Follow-up status validation.
-- Structured test information validation.
+## Owner Verification
 
-## AI Safety Rules
+Verification is available only to the authenticated owner of the medical
+document.
 
-Extracted medical information must be supported by the source document. The
-system rejects unsupported or malformed AI output rather than treating it as
-fact.
+The owner can:
 
-The AI must not fabricate medicines, dosages, frequencies, durations, routes,
-diagnoses, test names, test results, dates, follow-up instructions, or other
-medical information. Missing information remains missing or null, and source
-uncertainty is preserved where applicable.
+- View the extracted source document filename.
+- Review medicines, findings, tests, follow-ups, warnings, uncertainty notes,
+  and the patient summary.
+- See the medical disclaimer before confirmation.
+- Review source-support information when it is present in structured records.
+- Edit supported structured extraction fields before finalization.
+- Validate and save edits.
+- Cancel or revert unsaved edits.
+- Confirm the reviewed information as a verified care plan.
 
-## Validation and Testing
+Unauthenticated users are rejected by JWT middleware. Requests for another
+user's document are rejected by owner-scoped database queries.
 
-Phase 7 validation and regression coverage includes:
+## Editing Before Finalization
 
-- Valid medication dosage tests.
-- Invalid medication dosage tests.
-- Valid medication frequency tests.
-- Invalid medication frequency tests.
-- Valid medication duration tests.
-- Invalid medication duration tests.
-- Valid medication route tests.
-- Invalid medication route tests.
-- Valid follow-up date tests.
-- Invalid follow-up date tests, including invalid calendar dates.
-- Valid follow-up status tests.
-- Invalid follow-up status tests.
-- Valid structured test information tests.
-- Malformed and unsupported test information tests.
-- Source-support rejection tests.
-- Empty-source safety tests.
-- Unexpected-field rejection tests.
-- Malformed AI response handling tests.
-- Analysis/verification regression tests.
-- Authentication/RBAC regression tests.
-- Reset authorization regression tests.
-- Backend TypeScript build validation.
-- `git diff --check`.
+The review UI supports editing the structured data already supported by the
+backend, including:
 
-## API / Validation Behavior
+- Medication records and supported medication fields.
+- Findings.
+- Tests and supported result/status fields.
+- Follow-ups and supported date, status, provider, and instruction fields.
+- Warnings, uncertainty notes, and the patient summary.
 
-Structured extraction responses are validated with strict Zod schemas before
-they are returned or persisted. Required categories, types, item limits,
-field lengths, structured medication fields, follow-up fields, and test fields
-must conform to the supported model.
+Edits are sent through the same strict validation path used for structured
+extraction:
 
-Medication records validate dosage, frequency, duration, and route values.
-Follow-up records validate ISO dates, ISO date-times, explicit relative
-timeframes, and supported statuses. Test records validate test name,
-result/value, status, and source text when present.
+- Zod schemas reject malformed values.
+- Strict object schemas reject unexpected fields.
+- Item counts and field lengths remain bounded.
+- Medication dosage, frequency, duration, and route rules remain enforced.
+- Follow-up date/timeframe and status rules remain enforced.
+- Source-support checks reject unsupported medical facts.
+- Missing information is not silently inferred or fabricated.
 
-Unexpected fields and malformed values are rejected safely. Source-support
-checks run after schema validation and reject structured facts that are not
-supported by the extracted document text. Empty source input returns the safe
-empty extraction structure and does not create fabricated facts.
+The interface distinguishes the original AI extraction from user-edited
+content through the review/edit workflow and requires the user to inspect the
+updated information before confirmation.
 
-## Security and Data Protection
+## Confirmation and Finalization
 
-- Authentication is required for protected document extraction operations.
-- Authorization and document ownership checks remain enforced.
-- Structured extraction is available only for completed, owner-scoped
-  documents.
-- AI output is validated before it can be returned or persisted.
-- Source-support validation reduces hallucinated medical content.
-- Provider failures and malformed responses return safe errors.
-- API keys, credentials, tokens, raw document content, and sensitive provider
-  details are not exposed in errors or ordinary responses.
-- The existing authentication, RBAC, document ownership, OCR, human
-  verification, and verified care-plan behavior remain protected.
+Confirmation validates the reviewed extraction before persistence. A successful
+confirmation:
 
-## Phase 7 Completion
+- Stores the verified extraction in `verified_care_plans`.
+- Preserves the medical disclaimer.
+- Records the confirmation timestamp.
+- Creates a retained verification version.
+- Marks the newly created version as current.
+- Records a confirmation or re-confirmation audit event.
 
-**Phase 7 - Schema Validation & AI Safety is IMPLEMENTED.**
+Confirmation does not convert AI output into a diagnosis or automatically
+approve it as clinician medical advice.
 
-All Phase 7 schema, safety, validation, and regression checklist requirements
-are complete.
+## Version History
+
+Phase 8 retains finalized verification versions instead of permanently
+overwriting the previous version.
+
+Each retained version includes:
+
+- A version number.
+- The verified structured extraction.
+- The document and owner relationship.
+- The medical disclaimer.
+- Confirmation and creation timestamps.
+- A current-version indicator.
+
+Only the latest finalized version is marked current. Version history queries
+are owner-scoped and cannot expose another user's medical information.
+
+## Verification and Review Audit History
+
+Human verification actions are recorded in `verification_audit_events`.
+Recorded actions include:
+
+- `reviewed`
+- `edited`
+- `confirmed`
+- `reconfirmed`
+- `review_submitted`
+- `clinician_approved`
+- `clinician_rejected`
+- `clinician_changes_requested`
+
+Audit records include the authenticated user, document, optional care-plan
+relationship, action type, safe metadata, and timestamp. Audit metadata does
+not store passwords, JWTs, API keys, provider credentials, raw document text,
+or private storage paths.
+
+## Clinician Review Workflow
+
+A document owner can submit a verified care plan to a selected clinician by
+providing the clinician account ID. The selected account must have the
+existing `doctor` role.
+
+Doctor-only functionality includes:
+
+- A clinician review queue containing only reviews assigned to that doctor.
+- Viewing the verified extraction and disclaimer for assigned reviews.
+- Approving a review.
+- Rejecting a review.
+- Requesting changes.
+- Adding an optional clinician note.
+
+Clinician review stores:
+
+- Review status.
+- Patient/document relationship.
+- Assigned clinician identity.
+- Optional patient and clinician notes.
+- Request and review timestamps.
+
+Patients cannot perform doctor-only actions, arbitrary authenticated users
+cannot act as clinicians, and clinician approval does not remove the medical
+disclaimer or imply automatic diagnosis.
+
+## Security and Ownership Protections
+
+- JWT authentication is required for all protected verification endpoints.
+- Document IDs and review IDs are validated as UUIDs where applicable.
+- Owner-scoped queries protect documents, care plans, versions, and audit
+  history from IDOR and cross-user access.
+- Clinician queue access requires the signed JWT `doctor` role.
+- Clinicians can update only review records assigned to their account.
+- AI output is validated before it is returned or persisted.
+- Phase 7 source-support and anti-fabrication checks are preserved.
+- API responses do not expose raw OCR text, private upload storage keys, or
+  provider credentials.
+- Audit records store only safe metadata.
+
+## Phase 8 API Endpoints
+
+All endpoints below require authentication. The clinician queue and clinician
+review update endpoint additionally require the `doctor` role.
+
+```text
+GET    /api/analysis/:id/review
+PUT    /api/analysis/:id/review
+POST   /api/analysis/:id/confirm
+GET    /api/analysis/:id/versions
+GET    /api/analysis/:id/audit
+
+POST   /api/analysis/:id/clinician-review
+GET    /api/analysis/clinician/reviews
+PATCH  /api/analysis/clinician/reviews/:reviewId
+```
+
+The owner review endpoint returns the safe document identity, current draft or
+verified extraction, disclaimer, and confirmation state. The edit endpoint
+validates and saves owner edits to the draft care plan. The confirmation
+endpoint preserves the existing confirmation behavior while creating a
+version and audit record.
+
+## Phase 8 Database Changes
+
+Migration added:
+
+```text
+backend/database/migrations/20260917_phase8_verification_history.sql
+```
+
+The migration creates:
+
+| Table | Purpose |
+| --- | --- |
+| `verified_care_plan_versions` | Retained finalized versions with version numbers and current-version tracking |
+| `verification_audit_events` | Owner-scoped verification and clinician-review audit events |
+| `clinician_reviews` | Assigned clinician review status, identities, notes, and timestamps |
+
+The migration includes foreign keys, status and version constraints, current
+version uniqueness, and indexes for owner, document, patient, clinician, and
+status queries. Docker initialization mounts this migration as the Phase 8
+database migration.
+
+## Phase 8 Frontend
+
+The Phase 8 frontend implementation is in:
+
+```text
+frontend/index.html
+frontend/src/main.js
+```
+
+It provides:
+
+- Authenticated sign-in and unauthenticated access protection.
+- Owner document review screen.
+- Structured extraction cards.
+- Medical disclaimer and source-document context.
+- Structured editing controls.
+- Validation, loading, empty, success, and error states.
+- Cancel/revert editing.
+- Confirmation controls.
+- Version history display.
+- Audit/review history display.
+- Owner clinician-submission form.
+- Doctor clinician-review queue.
+- Approve, reject, and request-changes actions.
+
+The frontend uses the existing Vite setup and connects to the real backend
+endpoints rather than mock-only data.
+
+## Testing and Verification
+
+The Phase 8 verification regression completed with:
+
+- **Phase 8 regression verification: 6 assertions passed**
+  - Owner confirmation succeeds.
+  - Unauthenticated confirmation is rejected.
+  - Non-owner confirmation is rejected.
+  - Invalid extraction is rejected before persistence.
+  - Over-limit extraction is rejected before persistence.
+  - Sensitive document/storage information is not returned.
+- **Backend production build:** passed.
+- **Frontend production build:** passed.
+- **`git diff --check`:** passed.
+
+The existing repository does not define an `npm test` script or a frontend
+automated test runner. The backend regression was run directly with the
+repository's installed TypeScript test tooling.
+
+## Known Limitations
+
+- Frontend behavior is currently validated through the production build; no
+  frontend automated test framework is configured in the repository.
+- The backend test process can remain open because of the existing PostgreSQL
+  pool lifecycle after test assertions complete.
+- Clinician assignment currently uses an owner-selected doctor account ID.
+  A broader organization, care-team, or relationship model is not part of
+  Phase 8.
+- Existing deployments with an already-initialized PostgreSQL volume must
+  apply the Phase 8 migration explicitly; Docker initialization automatically
+  applies it only when initialization scripts are run.
+
+## Phase 8 Completion
+
+The following Phase 8 requirements are implemented:
+
+- [x] Complete User Verification UI
+- [x] Edit Before Finalization UI
+- [x] Version History
+- [x] Review/Audit History
+- [x] Clinician Review Workflow
+
+Phase 9 and later phases are not marked complete.

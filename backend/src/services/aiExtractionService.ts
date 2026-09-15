@@ -284,6 +284,26 @@ const hasSupportedOutput = (output: StructuredExtractionOutput, sourceText: stri
   );
 };
 
+export const validateReviewedExtraction = (
+  output: unknown,
+  sourceText: string | null | undefined
+): { ok: true; data: StructuredExtractionOutput } | { ok: false; error: string } => {
+  const validation = validateStructuredExtractionOutput(output);
+
+  if (!validation.ok) {
+    return validation;
+  }
+
+  if (!hasSupportedOutput(validation.data, normalizeInput(sourceText ?? ""))) {
+    return {
+      ok: false,
+      error: "Reviewed information must be supported by the document",
+    };
+  }
+
+  return validation;
+};
+
 export const extractStructuredInformation = async (
   extractedText: string | null | undefined,
   provider: LlmProvider = configuredProvider

@@ -94,3 +94,6 @@ CREATE TABLE IF NOT EXISTS draft_care_plans (
 
 CREATE INDEX IF NOT EXISTS idx_draft_care_plans_user_id_updated_at
     ON draft_care_plans (user_id, updated_at DESC);
+
+-- Phase 8 history tables are created by the timestamped migration so existing
+-- installations can apply them without recreating the base schema.
