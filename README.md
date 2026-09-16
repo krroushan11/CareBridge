@@ -1,294 +1,132 @@
-# CareBridge AI - Phase 8
-## Human Verification
+# CareBridge AI - Phase 9: Verified Care Plan
 
-**Status: ✅ IMPLEMENTED**
+## Phase 9 Overview
 
-CareBridge AI Phase 8 adds a secure human-verification workflow for
-document-derived AI extraction. AI output remains untrusted and informational
-until the authenticated document owner reviews, optionally edits, validates,
-and confirms it. Confirmed care-plan versions are retained, verification
-actions are auditable, and owners can submit verified information to an
-authorized doctor for review.
+Phase 9 finalizes document-derived, owner-reviewed information as a verified care plan. A verified plan is stored per medical document, retains confirmation history, records verification activity, and converts confirmed medication and follow-up data into owner-scoped tracker records.
 
-The existing JWT authentication, RBAC, document ownership checks, PDF/OCR
-processing, AI extraction, and Phase 7 Zod/source-support validation remain in
-place.
+AI-extracted information remains informational. Confirmation does not make it a diagnosis or professional medical advice.
 
-## Human Verification Workflow
+## Objectives
 
-The implemented workflow is:
+- Persist a verified care plan for an authenticated document owner.
+- Validate reviewed structured extraction data before persistence.
+- Support confirmation and re-confirmation with retained versions.
+- Provide owner-scoped retrieval of the current plan, versions, and audit history.
+- Convert confirmed medication and follow-up data into tracker records.
+
+## Verified Care Plan Workflow
 
 ```text
-Completed document
-        ↓
-AI structured extraction
-        ↓
-Owner review and edit
-        ↓
-Strict schema and source-support validation
-        ↓
-Owner confirmation
-        ↓
-Verified care-plan version
-        ↓
-Optional clinician review
-        ↓
-Approved / rejected / changes requested
+Completed document and reviewed extraction
+  → structured extraction validation
+  → owner-scoped confirmation transaction
+  → verified care-plan upsert
+  → current version creation and audit event
+  → medication and follow-up tracker synchronization
 ```
 
-The UI clearly states that extracted information is informational only. It
-does not present AI output as a diagnosis or as medical advice.
+The confirmation transaction verifies the document belongs to the authenticated user, upserts `verified_care_plans`, creates the next version, records a confirmation event, and synchronizes tracker records.
 
-## Owner Verification
+## Reviewed Extraction Validation
 
-Verification is available only to the authenticated owner of the medical
-document.
+Confirmation uses the existing structured extraction validation before database persistence. The reviewed extraction must satisfy the strict schema and bounded item rules; invalid data, including missing required fields or over-limit collections, is rejected before persistence. When a document has extracted text, source-support validation is also applied to the reviewed data.
 
-The owner can:
+## Current Verified Care Plan Retrieval
 
-- View the extracted source document filename.
-- Review medicines, findings, tests, follow-ups, warnings, uncertainty notes,
-  and the patient summary.
-- See the medical disclaimer before confirmation.
-- Review source-support information when it is present in structured records.
-- Edit supported structured extraction fields before finalization.
-- Validate and save edits.
-- Cancel or revert unsaved edits.
-- Confirm the reviewed information as a verified care plan.
-
-Unauthenticated users are rejected by JWT middleware. Requests for another
-user's document are rejected by owner-scoped database queries.
-
-## Editing Before Finalization
-
-The review UI supports editing the structured data already supported by the
-backend, including:
-
-- Medication records and supported medication fields.
-- Findings.
-- Tests and supported result/status fields.
-- Follow-ups and supported date, status, provider, and instruction fields.
-- Warnings, uncertainty notes, and the patient summary.
-
-Edits are sent through the same strict validation path used for structured
-extraction:
-
-- Zod schemas reject malformed values.
-- Strict object schemas reject unexpected fields.
-- Item counts and field lengths remain bounded.
-- Medication dosage, frequency, duration, and route rules remain enforced.
-- Follow-up date/timeframe and status rules remain enforced.
-- Source-support checks reject unsupported medical facts.
-- Missing information is not silently inferred or fabricated.
-
-The interface distinguishes the original AI extraction from user-edited
-content through the review/edit workflow and requires the user to inspect the
-updated information before confirmation.
-
-## Confirmation and Finalization
-
-Confirmation validates the reviewed extraction before persistence. A successful
-confirmation:
-
-- Stores the verified extraction in `verified_care_plans`.
-- Preserves the medical disclaimer.
-- Records the confirmation timestamp.
-- Creates a retained verification version.
-- Marks the newly created version as current.
-- Records a confirmation or re-confirmation audit event.
-
-Confirmation does not convert AI output into a diagnosis or automatically
-approve it as clinician medical advice.
+`GET /api/analysis/:id/verified-care-plan` returns the authenticated owner’s verified plan for a document. The response includes the verified extraction, disclaimer, confirmation and update timestamps, current-version metadata, and the latest clinician-review status when one exists.
 
 ## Version History
 
-Phase 8 retains finalized verification versions instead of permanently
-overwriting the previous version.
+`verified_care_plan_versions` stores the plan, document, owner, version number, extraction, disclaimer, confirmation time, and current-version flag. Owner-scoped version endpoints return the retained versions in version-number order.
 
-Each retained version includes:
+## Audit History
 
-- A version number.
-- The verified structured extraction.
-- The document and owner relationship.
-- The medical disclaimer.
-- Confirmation and creation timestamps.
-- A current-version indicator.
+`verification_audit_events` records safe verification lifecycle metadata for a user and document. The owner-scoped history endpoint returns events such as `confirmed` and `reconfirmed` without raw OCR text, private storage keys, passwords, tokens, or credentials.
 
-Only the latest finalized version is marked current. Version history queries
-are owner-scoped and cannot expose another user's medical information.
+## Re-confirmation Behavior
 
-## Verification and Review Audit History
+Re-confirmation updates the existing verified plan only when it belongs to the confirming user. It retains prior version rows, clears the former `is_current` version, creates the next sequential current version, and records a re-confirmation audit event. The operation runs in a database transaction.
 
-Human verification actions are recorded in `verification_audit_events`.
-Recorded actions include:
+## Medication and Follow-up Trackers
 
-- `reviewed`
-- `edited`
-- `confirmed`
-- `reconfirmed`
-- `review_submitted`
-- `clinician_approved`
-- `clinician_rejected`
-- `clinician_changes_requested`
+Phase 9 adds owner-scoped conversion of confirmed plan data into:
 
-Audit records include the authenticated user, document, optional care-plan
-relationship, action type, safe metadata, and timestamp. Audit metadata does
-not store passwords, JWTs, API keys, provider credentials, raw document text,
-or private storage paths.
+- `medication_tracker_records`, derived from verified `medications` entries.
+- `follow_up_tracker_records`, derived from verified `follow_up` entries.
 
-## Clinician Review Workflow
+On every confirmation or re-confirmation, existing tracker records for the verified care plan are deleted before the converted set is inserted. This keeps the trackers aligned with the latest verified extraction and prevents duplicate records. Tracker records are not created from unverified extraction data.
 
-A document owner can submit a verified care plan to a selected clinician by
-providing the clinician account ID. The selected account must have the
-existing `doctor` role.
+## Clinical Review / Approval Workflow
 
-Doctor-only functionality includes:
+The analysis routes support an authenticated owner submitting a verified plan to a selected doctor-role clinician. Doctor-role users can list assigned reviews and update their assigned review to `approved`, `rejected`, or `changes_requested`. Clinician actions retain the medical disclaimer and do not convert AI output into a diagnosis.
 
-- A clinician review queue containing only reviews assigned to that doctor.
-- Viewing the verified extraction and disclaimer for assigned reviews.
-- Approving a review.
-- Rejecting a review.
-- Requesting changes.
-- Adding an optional clinician note.
+## API Endpoints
 
-Clinician review stores:
+All endpoints are mounted under `/api/analysis` and require JWT authentication. Clinician queue and update routes additionally require the `doctor` role.
 
-- Review status.
-- Patient/document relationship.
-- Assigned clinician identity.
-- Optional patient and clinician notes.
-- Request and review timestamps.
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `POST` | `/:id/confirm` | Confirm reviewed extraction data and persist/update the owner’s verified care plan. |
+| `GET` | `/:id/verified-care-plan` | Retrieve the owner’s current verified care plan. |
+| `GET` | `/:documentId/verified-care-plan/versions` | Retrieve owner-scoped verified-plan versions. |
+| `GET` | `/:documentId/verified-care-plan/history` | Retrieve owner-scoped verification audit history. |
+| `GET` | `/:id/review` | Retrieve owner-scoped review data. |
+| `PUT` | `/:id/review` | Validate and save owner review edits to the draft plan. |
+| `GET` | `/:id/versions` | Retrieve owner-scoped finalized version history. |
+| `GET` | `/:id/audit` | Retrieve owner-scoped audit events. |
+| `POST` | `/:id/clinician-review` | Submit a verified plan to a selected doctor-role clinician. |
+| `GET` | `/clinician/reviews` | List reviews assigned to the authenticated doctor. |
+| `PATCH` | `/clinician/reviews/:reviewId` | Update an assigned clinician review. |
 
-Patients cannot perform doctor-only actions, arbitrary authenticated users
-cannot act as clinicians, and clinician approval does not remove the medical
-disclaimer or imply automatic diagnosis.
+## Database Changes
 
-## Security and Ownership Protections
-
-- JWT authentication is required for all protected verification endpoints.
-- Document IDs and review IDs are validated as UUIDs where applicable.
-- Owner-scoped queries protect documents, care plans, versions, and audit
-  history from IDOR and cross-user access.
-- Clinician queue access requires the signed JWT `doctor` role.
-- Clinicians can update only review records assigned to their account.
-- AI output is validated before it is returned or persisted.
-- Phase 7 source-support and anti-fabrication checks are preserved.
-- API responses do not expose raw OCR text, private upload storage keys, or
-  provider credentials.
-- Audit records store only safe metadata.
-
-## Phase 8 API Endpoints
-
-All endpoints below require authentication. The clinician queue and clinician
-review update endpoint additionally require the `doctor` role.
+Phase 9 tracker migration:
 
 ```text
-GET    /api/analysis/:id/review
-PUT    /api/analysis/:id/review
-POST   /api/analysis/:id/confirm
-GET    /api/analysis/:id/versions
-GET    /api/analysis/:id/audit
-
-POST   /api/analysis/:id/clinician-review
-GET    /api/analysis/clinician/reviews
-PATCH  /api/analysis/clinician/reviews/:reviewId
+backend/database/migrations/20260918_phase9_verified_care_plan_trackers.sql
 ```
 
-The owner review endpoint returns the safe document identity, current draft or
-verified extraction, disclaimer, and confirmation state. The edit endpoint
-validates and saves owner edits to the draft care plan. The confirmation
-endpoint preserves the existing confirmation behavior while creating a
-version and audit record.
+It creates `medication_tracker_records` and `follow_up_tracker_records`, each with foreign keys to the owner, verified care plan, and medical document, plus owner/document indexes and duplicate-prevention uniqueness constraints.
 
-## Phase 8 Database Changes
+Phase 9 also uses the verified-plan, version-history, audit-history, draft-plan, and clinician-review tables established by:
 
-Migration added:
+- `20260912_create_verified_care_plans.sql`
+- `20260916_create_draft_care_plans.sql`
+- `20260917_phase8_verification_history.sql`
+
+## Authentication and Authorization
+
+- Protected analysis routes use JWT authentication through `authenticateToken`.
+- Confirmation selects and persists data using both document ID and authenticated user ID.
+- Current-plan retrieval, version history, and audit history are owner-scoped by user and document.
+- Cross-user confirmation returns a not-found response rather than exposing another user’s document.
+- Doctor-only routes require `requireRole("doctor")`; clinician updates are scoped to the assigned clinician.
+- Confirmation responses do not include raw document text or private storage references.
+
+## Tests and Validation
+
+Focused Phase 9 coverage is in `backend/test/analysisVerification.test.ts`.
+
+The current focused suite contains 10 tests covering owner confirmation and persistence, unauthenticated and cross-user rejection, invalid and over-limit reviewed extraction rejection before persistence, protection of raw/private document references, current-plan retrieval, version retrieval, audit retrieval, and idempotent medication/follow-up tracker synchronization.
 
 ```text
-backend/database/migrations/20260917_phase8_verification_history.sql
+npx.cmd tsc --noEmit
+node --import tsx --test --test-force-exit test/analysisVerification.test.ts
 ```
 
-The migration creates:
+## Phase 9 Files
 
-| Table | Purpose |
-| --- | --- |
-| `verified_care_plan_versions` | Retained finalized versions with version numbers and current-version tracking |
-| `verification_audit_events` | Owner-scoped verification and clinician-review audit events |
-| `clinician_reviews` | Assigned clinician review status, identities, notes, and timestamps |
-
-The migration includes foreign keys, status and version constraints, current
-version uniqueness, and indexes for owner, document, patient, clinician, and
-status queries. Docker initialization mounts this migration as the Phase 8
-database migration.
-
-## Phase 8 Frontend
-
-The Phase 8 frontend implementation is in:
-
-```text
-frontend/index.html
-frontend/src/main.js
-```
-
-It provides:
-
-- Authenticated sign-in and unauthenticated access protection.
-- Owner document review screen.
-- Structured extraction cards.
-- Medical disclaimer and source-document context.
-- Structured editing controls.
-- Validation, loading, empty, success, and error states.
-- Cancel/revert editing.
-- Confirmation controls.
-- Version history display.
-- Audit/review history display.
-- Owner clinician-submission form.
-- Doctor clinician-review queue.
-- Approve, reject, and request-changes actions.
-
-The frontend uses the existing Vite setup and connects to the real backend
-endpoints rather than mock-only data.
-
-## Testing and Verification
-
-The Phase 8 verification regression completed with:
-
-- **Phase 8 regression verification: 6 assertions passed**
-  - Owner confirmation succeeds.
-  - Unauthenticated confirmation is rejected.
-  - Non-owner confirmation is rejected.
-  - Invalid extraction is rejected before persistence.
-  - Over-limit extraction is rejected before persistence.
-  - Sensitive document/storage information is not returned.
-- **Backend production build:** passed.
-- **Frontend production build:** passed.
-- **`git diff --check`:** passed.
-
-The existing repository does not define an `npm test` script or a frontend
-automated test runner. The backend regression was run directly with the
-repository's installed TypeScript test tooling.
+- `backend/database/migrations/20260918_phase9_verified_care_plan_trackers.sql`
+- `backend/database/schema.sql`
+- `backend/src/controllers/analysisController.ts`
+- `backend/src/routes/analysisRoutes.ts`
+- `backend/test/analysisVerification.test.ts`
+- `docs/api.md`
+- `docs/development-roadmap.md`
+- `PHASE9_FINAL_REPORT.md`
 
 ## Known Limitations
 
-- Frontend behavior is currently validated through the production build; no
-  frontend automated test framework is configured in the repository.
-- The backend test process can remain open because of the existing PostgreSQL
-  pool lifecycle after test assertions complete.
-- Clinician assignment currently uses an owner-selected doctor account ID.
-  A broader organization, care-team, or relationship model is not part of
-  Phase 8.
-- Existing deployments with an already-initialized PostgreSQL volume must
-  apply the Phase 8 migration explicitly; Docker initialization automatically
-  applies it only when initialization scripts are run.
-
-## Phase 8 Completion
-
-The following Phase 8 requirements are implemented:
-
-- [x] Complete User Verification UI
-- [x] Edit Before Finalization UI
-- [x] Version History
-- [x] Review/Audit History
-- [x] Clinician Review Workflow
-
-Phase 9 and later phases are not marked complete.
+- Tracker records represent verified document-derived medication and follow-up information; they do not provide medication scheduling, dose reminders, or adherence tracking.
+- Clinician submission uses an owner-selected clinician account ID; a broader care-team relationship model is not part of this phase.
+- Existing deployments must apply timestamped migrations to an already-initialized PostgreSQL database.
