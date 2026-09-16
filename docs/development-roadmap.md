@@ -129,3 +129,19 @@ Finalized versions are retained, review actions are owner-scoped in an audit
 history, and clinician review is limited to doctor-role users explicitly
 selected by the document owner. AI output remains informational and is never
 automatically treated as medical advice or clinician approval.
+
+## Phase 9 - Verified Care Plan
+
+Status: **[✓] IMPLEMENTED**
+
+- [✓] Retrieve verified care plan for the authenticated owner
+- [✓] Persist version history and current-version tracking
+- [✓] Persist audit/review history for confirmation and clinician actions
+- [✓] Convert verified medication data into owner-scoped tracker records
+- [✓] Convert verified follow-up data into owner-scoped tracker records
+- [✓] Re-confirmation is idempotent and does not duplicate tracker records
+- [✓] Finalization is transactional and owner-scoped
+- [✓] API and schema updates match the verified-care-plan workflows
+
+This milestone requires the verified plan, version history, audit history, and
+tracker synchronization to remain owner-scoped and safe across re-confirmations.

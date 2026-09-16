@@ -131,12 +131,15 @@ The operation is owner-scoped and persists the verified care plan.
 
 ### Human verification review
 
+- `GET /api/analysis/:id/verified-care-plan` — current owner-scoped verified care plan.
 - `GET /api/analysis/:id/review` — authenticated document-owner review payload.
 - `PUT /api/analysis/:id/review` — validate and save owner edits to the
   document draft. The strict Phase 7 schema and source-support checks are
   applied before persistence.
 - `GET /api/analysis/:id/versions` — owner-scoped finalized version history.
+- `GET /api/analysis/:documentId/verified-care-plan/versions` — owner-scoped verified plan history with current-version metadata.
 - `GET /api/analysis/:id/audit` — owner-scoped verification and review events.
+- `GET /api/analysis/:documentId/verified-care-plan/history` — owner-scoped audit/review timeline.
 
 Confirmation creates a new immutable version in
 `verified_care_plan_versions`; older versions are retained and only the newest

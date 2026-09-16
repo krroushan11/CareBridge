@@ -1,5 +1,6 @@
 import express from "express";
 import dotenv from "dotenv";
+import cors from "cors";
 import helmet from "helmet";
 import { pool } from "./config/database";
 import analysisRoutes from "./routes/analysisRoutes";
@@ -20,6 +21,9 @@ try {
 const app = express();
 
 app.use(helmet({ contentSecurityPolicy: false }));
+app.use(cors({
+  origin: process.env.FRONTEND_ORIGIN || "http://localhost:5173",
+}));
 app.use(express.json());
 app.use("/api/auth", authRoutes);
 app.use("/api/documents", documentRoutes);

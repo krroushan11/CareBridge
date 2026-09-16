@@ -79,6 +79,46 @@ CREATE TABLE IF NOT EXISTS verified_care_plans (
 CREATE INDEX IF NOT EXISTS idx_verified_care_plans_user_id_confirmed_at
     ON verified_care_plans (user_id, confirmed_at DESC);
 
+CREATE TABLE IF NOT EXISTS medication_tracker_records (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    verified_care_plan_id UUID NOT NULL REFERENCES verified_care_plans(id) ON DELETE CASCADE,
+    document_id UUID NOT NULL REFERENCES medical_documents(id) ON DELETE CASCADE,
+    medication_name VARCHAR(255) NOT NULL,
+    dosage VARCHAR(100),
+    frequency VARCHAR(100),
+    route VARCHAR(50),
+    duration VARCHAR(100),
+    instructions TEXT,
+    source_text TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (verified_care_plan_id, medication_name,
+            COALESCE(dosage, ''), COALESCE(frequency, ''), COALESCE(route, ''), COALESCE(duration, ''))
+);
+
+CREATE INDEX IF NOT EXISTS idx_medication_tracker_records_owner
+    ON medication_tracker_records (user_id, document_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS follow_up_tracker_records (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    verified_care_plan_id UUID NOT NULL REFERENCES verified_care_plans(id) ON DELETE CASCADE,
+    document_id UUID NOT NULL REFERENCES medical_documents(id) ON DELETE CASCADE,
+    follow_up_type VARCHAR(255) NOT NULL,
+    scheduled_date VARCHAR(100),
+    status VARCHAR(30),
+    notes TEXT,
+    source_text TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (verified_care_plan_id, follow_up_type,
+            COALESCE(scheduled_date, ''), COALESCE(status, ''))
+);
+
+CREATE INDEX IF NOT EXISTS idx_follow_up_tracker_records_owner
+    ON follow_up_tracker_records (user_id, document_id, created_at DESC);
+
 -- Automatically generated, unapproved care-plan drafts from structured extraction.
 CREATE TABLE IF NOT EXISTS draft_care_plans (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
