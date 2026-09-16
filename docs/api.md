@@ -160,6 +160,37 @@ Clinician actions require a signed JWT with the `doctor` role and an assigned
 review row. Approval does not remove the medical disclaimer or convert AI
 output into a diagnosis.
 
+## Medication management
+
+All medication endpoints require authentication and return only records owned
+by the authenticated user.
+
+- `GET /api/medications` — returns medication schedules, today's doses,
+  upcoming and due doses, recent missed doses, and adherence analytics.
+- `POST /api/medications` — creates a daily medication schedule. The request
+  requires `name` and a non-empty `dose_times` array of `HH:MM` values.
+  Optional fields include `dosage`, `dosage_unit`, `start_date`, `end_date`,
+  `instructions`, `notes`, and `grace_period_minutes` (0–1440).
+- `POST /api/medications/:id/taken` — records the owner’s due scheduled dose
+  as taken. An optional `scheduled_at` timestamp identifies a particular dose.
+  Repeating a taken request for the same dose safely returns the existing
+  taken record.
+- `POST /api/medications/:id/skipped` — records the owner’s due scheduled dose
+  as skipped. An optional `scheduled_at` timestamp identifies a particular
+  dose.
+
+Schedules are currently daily. The backend creates per-dose history records
+for active schedules in a 30-day upcoming window. A still-scheduled dose is
+marked missed only after its medication’s configured grace period has elapsed.
+Adherence is calculated from real stored history as:
+
+```text
+taken eligible doses / all eligible scheduled doses × 100
+```
+
+Eligible doses are scheduled at or before the current time; future doses are
+not included. When no eligible doses exist, adherence is returned as `null`.
+
 ## AI structured extraction and draft care plans
 
 The structured extraction endpoint reuses the completed-document flow:

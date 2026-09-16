@@ -6,6 +6,7 @@ import { pool } from "./config/database";
 import analysisRoutes from "./routes/analysisRoutes";
 import authRoutes from "./routes/authRoutes";
 import documentRoutes from "./routes/documentRoutes";
+import medicationRoutes from "./routes/medicationRoutes";
 import { validateJwtSecret } from "./middlewares/authMiddleware";
 import { startDocumentProcessingWorker } from "./services/documentProcessingQueue";
 
@@ -28,6 +29,7 @@ app.use(express.json());
 app.use("/api/auth", authRoutes);
 app.use("/api/documents", documentRoutes);
 app.use("/api/analysis", analysisRoutes);
+app.use("/api/medications", medicationRoutes);
 
 startDocumentProcessingWorker();
 
