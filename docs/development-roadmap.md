@@ -145,3 +145,12 @@ Status: **[✓] IMPLEMENTED**
 
 This milestone requires the verified plan, version history, audit history, and
 tracker synchronization to remain owner-scoped and safe across re-confirmations.
+
+## Phase 10 - Medication Management
+
+Status: **[✓] IMPLEMENTED**
+
+- [✓] Owner-scoped medication schedules and dose history
+- [✓] Taken, skipped, and grace-period-based missed-dose tracking
+- [✓] Stored-history adherence analytics without future-dose penalties
+- [✓] Medication dashboard with browser notification opt-in while open

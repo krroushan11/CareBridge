@@ -1,3 +1,12 @@
+import {
+  claimUndeliveredDoses,
+  findDueDoses,
+  readReminderSoundPreference,
+  shouldPlayReminderSound,
+  shouldRequestNotificationPermission,
+  writeReminderSoundPreference,
+} from "./reminderUtils.js";
+
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000";
 const main = document.querySelector("main");
 const tokenKey = "carebridge_token";
@@ -28,6 +37,43 @@ const escapeHtml = (value) => String(value ?? "")
 const formatJson = (value) => JSON.stringify(value ?? [], null, 2);
 const fields = ["medications", "findings", "tests", "follow_up", "warnings", "uncertainty_notes"];
 let currentExtraction;
+let medicationReminderTimer;
+const notifiedDoseIds = new Set();
+const soundedDoseIds = new Set();
+const snoozedUntilByDoseId = new Map();
+let reminderMuted = false;
+let reminderAudioContext;
+
+const getReminderAudioContext = () => {
+  const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextConstructor) return null;
+  reminderAudioContext ||= new AudioContextConstructor();
+  return reminderAudioContext;
+};
+
+const unlockReminderSound = async () => {
+  const context = getReminderAudioContext();
+  if (!context) return false;
+  await context.resume();
+  writeReminderSoundPreference(window.localStorage, true);
+  return context.state === "running";
+};
+
+const playReminderSound = () => {
+  const context = getReminderAudioContext();
+  if (!context || context.state !== "running") return false;
+  const oscillator = context.createOscillator();
+  const gain = context.createGain();
+  oscillator.type = "sine";
+  oscillator.frequency.setValueAtTime(880, context.currentTime);
+  gain.gain.setValueAtTime(0.0001, context.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.15, context.currentTime + 0.02);
+  gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.7);
+  oscillator.connect(gain).connect(context.destination);
+  oscillator.start();
+  oscillator.stop(context.currentTime + 0.72);
+  return true;
+};
 
 const renderAuth = () => {
   main.innerHTML = `
@@ -77,6 +123,117 @@ const renderClinicianDashboard = async () => {
   }
 };
 
+const medicationLabel = (medication) => [medication.name || medication.medication_name, medication.dosage, medication.dosage_unit].filter(Boolean).join(" ");
+const displayDateTime = (value) => new Date(value).toLocaleString();
+
+const renderMedicationDashboard = async () => {
+  main.innerHTML = `<section class="card loading" aria-live="polite">Loading medication dashboard…</section>`;
+  try {
+    const result = await request("/api/medications");
+    const { medications, analytics } = result;
+    const reminderPermission = "Notification" in window ? Notification.permission : "unsupported";
+    const soundEnabled = readReminderSoundPreference(window.localStorage);
+    const dueDoses = findDueDoses({
+      dueDoses: analytics.due_doses || [],
+      upcomingDoses: analytics.upcoming_doses || [],
+      snoozedUntilById: snoozedUntilByDoseId,
+    });
+    main.innerHTML = `
+      <header class="topbar"><h1>Medication dashboard</h1><button id="logout">Sign out</button></header>
+      <section class="card disclaimer"><strong>Medication safety</strong><p>Use this tracker to record your medication routine. Confirm medication instructions with your clinician or pharmacist.</p></section>
+      <section class="card"><h2>Adherence overview</h2><p><strong>${analytics.adherence_percentage ?? "—"}${analytics.adherence_percentage === null ? "" : "%"}</strong> adherence from ${analytics.taken_doses} taken of ${analytics.eligible_doses} eligible scheduled doses.</p><p class="muted">Skipped: ${analytics.skipped_doses}. Missed: ${analytics.missed_doses}. Future doses are not included in adherence.</p></section>
+      <section class="card"><h2>Reminders</h2><p class="muted">This page checks due doses while it is open. Browser notifications require your permission and may be blocked by your browser or device.</p><div class="actions"><button class="secondary" id="enable-reminders" ${reminderPermission === "granted" || reminderPermission === "unsupported" ? "disabled" : ""}>${reminderPermission === "granted" ? "Notifications enabled" : reminderPermission === "unsupported" ? "Notifications unavailable" : "Enable browser notifications"}</button><button class="secondary" id="enable-reminder-sound">${soundEnabled ? "Reminder sound enabled" : "Enable Reminder Sound"}</button><button class="secondary" id="test-reminder-sound">Test Reminder Sound</button><button class="secondary" id="mute-reminders">Mute reminders for this page</button></div><p id="reminder-message" class="message" role="status"></p></section>
+      ${dueDoses.length ? `<section class="card disclaimer" id="due-reminders"><h2>Medication due now</h2>${dueDoses.map((dose) => `<article class="data-card"><strong>${escapeHtml(medicationLabel(dose))}</strong><p>Scheduled for ${escapeHtml(displayDateTime(dose.scheduled_at))}.</p><div class="actions"><button data-reminder-taken="${dose.id}" data-medication-id="${dose.medication_id}" data-scheduled-at="${dose.scheduled_at}">Mark as Taken</button><button class="secondary" data-reminder-snooze="${dose.id}">Snooze 10 minutes</button></div></article>`).join("")}</section>` : ""}
+      <section class="card"><h2>Add medication</h2><form id="medication-form"><div class="data-grid">
+        <label>Medicine name <input required name="name" maxlength="255"></label>
+        <label>Dosage <input name="dosage" maxlength="100" placeholder="e.g. 500"></label>
+        <label>Unit <input name="dosage_unit" maxlength="30" placeholder="e.g. mg"></label>
+        <label>Dose times <input required name="dose_times" placeholder="08:00, 20:00" pattern="^([01]\\d|2[0-3]):[0-5]\\d(,\\s*([01]\\d|2[0-3]):[0-5]\\d)*$"></label>
+        <label>Start date <input required type="date" name="start_date" value="${new Date().toISOString().slice(0, 10)}"></label>
+        <label>End date <input type="date" name="end_date"></label>
+      </div><label>Instructions <textarea name="instructions" rows="2" maxlength="2000"></textarea></label><label>Notes <textarea name="notes" rows="2" maxlength="2000"></textarea></label><button>Add medication</button><p id="medication-message" class="message" role="alert"></p></form></section>
+      <section class="card"><h2>Today's medications</h2>${medications.length ? medications.map((medication) => `<article class="data-card"><h3>${escapeHtml(medicationLabel(medication))}</h3><p>${escapeHtml(medication.frequency)} at ${escapeHtml(medication.dose_times.join(", "))}</p><p>Adherence: <strong>${medication.adherence.percentage ?? "—"}${medication.adherence.percentage === null ? "" : "%"}</strong> (${medication.adherence.taken_doses}/${medication.adherence.eligible_doses} eligible doses taken)</p>${medication.today_doses.length ? medication.today_doses.map((dose) => `<p><strong>${escapeHtml(displayDateTime(dose.scheduled_at))}</strong> — ${escapeHtml(dose.status)} ${dose.status === "scheduled" ? `<button data-dose-action="taken" data-medication-id="${medication.id}" data-scheduled-at="${dose.scheduled_at}">Taken</button> <button class="secondary" data-dose-action="skipped" data-medication-id="${medication.id}" data-scheduled-at="${dose.scheduled_at}">Skipped</button>` : ""}</p>`).join("") : "<p class=\"muted\">No doses scheduled today.</p>"}</article>`).join("") : "<p>No medications yet. Add one above to begin tracking.</p>"}</section>
+      <section class="card"><h2>Upcoming doses</h2>${analytics.upcoming_doses.length ? `<ul>${analytics.upcoming_doses.map((dose) => `<li>${escapeHtml(medicationLabel(dose))} — ${escapeHtml(displayDateTime(dose.scheduled_at))}</li>`).join("")}</ul>` : "<p>No upcoming doses in the current schedule window.</p>"}</section>
+      <section class="card"><h2>Recent missed doses</h2>${analytics.recent_missed_doses.length ? `<ul>${analytics.recent_missed_doses.map((dose) => `<li>${escapeHtml(medicationLabel(dose))} — ${escapeHtml(displayDateTime(dose.scheduled_at))}</li>`).join("")}</ul>` : "<p>No missed doses recorded.</p>"}</section>`;
+    document.querySelector("#logout").onclick = () => { localStorage.removeItem(tokenKey); renderAuth(); };
+    document.querySelector("#medication-form").onsubmit = async (event) => {
+      event.preventDefault();
+      const form = new FormData(event.currentTarget);
+      const message = document.querySelector("#medication-message");
+      const doseTimes = String(form.get("dose_times")).split(",").map((time) => time.trim()).filter(Boolean);
+      try {
+        await request("/api/medications", { method: "POST", body: JSON.stringify({
+          name: form.get("name"), dosage: form.get("dosage") || null, dosage_unit: form.get("dosage_unit") || null,
+          dose_times: doseTimes, start_date: form.get("start_date"), end_date: form.get("end_date") || null,
+          instructions: form.get("instructions") || null, notes: form.get("notes") || null,
+        }) });
+        renderMedicationDashboard();
+      } catch (error) { message.textContent = error.message; }
+    };
+    document.querySelectorAll("[data-dose-action]").forEach((button) => button.onclick = async () => {
+      try {
+        await request(`/api/medications/${button.dataset.medicationId}/${button.dataset.doseAction}`, { method: "POST", body: JSON.stringify({ scheduled_at: button.dataset.scheduledAt }) });
+        renderMedicationDashboard();
+      } catch (error) { window.alert(error.message); }
+    });
+    document.querySelector("#enable-reminders").onclick = async () => {
+      const message = document.querySelector("#reminder-message");
+      if (!("Notification" in window) || !shouldRequestNotificationPermission(Notification.permission)) return;
+      const permission = await Notification.requestPermission();
+      message.textContent = permission === "granted" ? "Browser notifications enabled while this page is open." : "Browser notification permission was not granted.";
+    };
+    document.querySelector("#enable-reminder-sound").onclick = async () => {
+      const message = document.querySelector("#reminder-message");
+      try {
+        const unlocked = await unlockReminderSound();
+        message.textContent = unlocked ? "Reminder sound enabled for this browser." : "Reminder sound is not supported by this browser.";
+        if (unlocked) document.querySelector("#enable-reminder-sound").textContent = "Reminder sound enabled";
+      } catch { message.textContent = "Reminder sound could not be enabled. Try again after interacting with the page."; }
+    };
+    document.querySelector("#test-reminder-sound").onclick = async () => {
+      const message = document.querySelector("#reminder-message");
+      try {
+        const unlocked = await unlockReminderSound();
+        message.textContent = unlocked && playReminderSound() ? "Reminder sound played." : "Reminder sound is not supported by this browser.";
+      } catch { message.textContent = "Reminder sound could not be played."; }
+    };
+    document.querySelector("#mute-reminders").onclick = () => { reminderMuted = true; document.querySelector("#reminder-message").textContent = "Reminders muted until this dashboard is reloaded."; };
+    document.querySelectorAll("[data-reminder-snooze]").forEach((button) => button.onclick = () => {
+      snoozedUntilByDoseId.set(button.dataset.reminderSnooze, Date.now() + 10 * 60_000);
+      document.querySelector("#reminder-message").textContent = "Reminder snoozed for 10 minutes. The dose remains scheduled.";
+      renderMedicationDashboard();
+    });
+    document.querySelectorAll("[data-reminder-taken]").forEach((button) => button.onclick = async () => {
+      try {
+        await request(`/api/medications/${button.dataset.medicationId}/taken`, { method: "POST", body: JSON.stringify({ scheduled_at: button.dataset.scheduledAt }) });
+        snoozedUntilByDoseId.delete(button.dataset.reminderTaken);
+        renderMedicationDashboard();
+      } catch (error) { window.alert(error.message); }
+    });
+    const notifyDueDoses = () => {
+      if (reminderMuted) return;
+      const due = findDueDoses({
+        dueDoses: analytics.due_doses || [],
+        upcomingDoses: analytics.upcoming_doses || [],
+        snoozedUntilById: snoozedUntilByDoseId,
+      });
+      if ("Notification" in window && Notification.permission === "granted") {
+        claimUndeliveredDoses(due, notifiedDoseIds).forEach((dose) => {
+          new Notification("CareBridge medication reminder", { body: `${medicationLabel(dose)} is due now.` });
+        });
+      }
+      if (shouldPlayReminderSound(readReminderSoundPreference(window.localStorage), reminderAudioContext?.state === "running")) {
+        claimUndeliveredDoses(due, soundedDoseIds).forEach(() => playReminderSound());
+      }
+    };
+    notifyDueDoses();
+    medicationReminderTimer = window.setInterval(notifyDueDoses, 60_000);
+  } catch (error) {
+    main.innerHTML = `<section class="card"><h1>Unable to load medications</h1><p class="message">${escapeHtml(error.message)}</p><button id="retry">Try again</button></section>`;
+    document.querySelector("#retry").onclick = renderMedicationDashboard;
+  }
+};
+
 const editor = (extraction) => fields.map((field) => `
   <label class="editor-field">${field.replaceAll("_", " ")}
     <textarea data-field="${field}" rows="${field === "patient_summary" ? 3 : 5}">${escapeHtml(formatJson(extraction[field]))}</textarea>
@@ -96,12 +253,11 @@ const extractionCards = (extraction) => fields.map((field) => {
 }).join("") + `<section class="data-card"><h3>patient summary</h3><p>${escapeHtml(extraction?.patient_summary)}</p></section>`;
 
 const renderApp = async () => {
+  if (medicationReminderTimer) window.clearInterval(medicationReminderTimer);
   if (!token()) return renderAuth();
   if (!documentId()) {
     if (role() === "doctor") return renderClinicianDashboard();
-    main.innerHTML = `<section class="card"><h1>Review a document</h1><p>Add a document ID to the URL, for example <code>?document=...</code>.</p><button id="logout">Sign out</button></section>`;
-    document.querySelector("#logout").onclick = () => { localStorage.removeItem(tokenKey); renderAuth(); };
-    return;
+    return renderMedicationDashboard();
   }
   main.innerHTML = `<section class="card loading" aria-live="polite">Loading secure review…</section>`;
   try {
@@ -116,7 +272,7 @@ const renderApp = async () => {
       return;
     }
     main.innerHTML = `
-      <header class="topbar"><h1>Review extracted information</h1><button id="logout">Sign out</button></header>
+      <header class="topbar"><h1>Review extracted information</h1><div class="actions"><button class="secondary" id="medications">Medications</button><button id="logout">Sign out</button></div></header>
       <section class="card disclaimer"><strong>Medical disclaimer</strong><p>${escapeHtml(review.disclaimer)}</p></section>
       <section class="card"><h2>Source document</h2><p>${escapeHtml(review.document.original_filename)}</p><p class="muted">AI output is informational and remains unverified until you confirm it.</p></section>
       <section class="card">
@@ -153,6 +309,7 @@ const readEditedExtraction = () => {
 
 const bindReviewHandlers = (review) => {
   document.querySelector("#logout").onclick = () => { localStorage.removeItem(tokenKey); renderAuth(); };
+  document.querySelector("#medications").onclick = () => { window.history.replaceState({}, "", window.location.pathname); renderApp(); };
   document.querySelector("#revert").onclick = () => { currentExtraction = review.extraction; renderApp(); };
   document.querySelector("#edit-form").onsubmit = async (event) => {
     event.preventDefault();
