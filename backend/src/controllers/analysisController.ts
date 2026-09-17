@@ -7,6 +7,10 @@ import {
     validateReviewedExtraction,
     validateStructuredExtractionOutput,
 } from "../services/aiExtractionService";
+import {
+    mapExtractionFollowUps,
+    mapExtractionTests,
+} from "../services/trackerService";
 
 const reviewStatusSchema = z.object({
   status: z.enum(["approved", "rejected", "changes_requested"]),
@@ -204,6 +208,107 @@ export const syncVerifiedCarePlanTrackers = async (
       `INSERT INTO follow_up_tracker_records
          (user_id, verified_care_plan_id, document_id, follow_up_type, scheduled_date, status, notes)
        VALUES ${placeholders.join(", ")}`,
+      values
+    );
+  }
+};
+
+/**
+ * Phase 11: syncs verified AI extraction output into the persistent follow-up
+ * and medical-test task tables. Insert-only with fingerprint deduplication:
+ * re-confirming a document never duplicates records and never overwrites
+ * owner-made status changes. AI dates were already normalized safely during
+ * mapping; unknown dates stay NULL instead of being invented.
+ */
+export const syncVerifiedCarePlanTaskRecords = async (
+  plan: {
+    id?: string;
+    user_id?: string;
+    document_id?: string;
+    verified_extraction?: Record<string, unknown> | null;
+  },
+  userIdOverride?: string,
+  client: Pool | PoolClient = pool
+) => {
+  const planId = plan.id;
+  const userId = userIdOverride || plan.user_id;
+  const documentId = plan.document_id;
+
+  if (!planId || !userId || !documentId) {
+    return;
+  }
+
+  const extraction = plan.verified_extraction && typeof plan.verified_extraction === "object"
+    ? plan.verified_extraction as Record<string, unknown>
+    : {};
+
+  const mappedFollowUps = mapExtractionFollowUps(
+    Array.isArray(extraction.follow_up) ? { follow_up: extraction.follow_up } as any : { follow_up: [] }
+  );
+  const mappedTests = mapExtractionTests(
+    Array.isArray(extraction.tests) ? { tests: extraction.tests } as any : { tests: [] }
+  );
+
+  if (mappedFollowUps.length > 0) {
+    const values: Array<unknown> = [];
+    const placeholders: string[] = [];
+    mappedFollowUps.forEach((item, index) => {
+      const rowIndex = index * 11 + 1;
+      placeholders.push(`($${rowIndex}, $${rowIndex + 1}, $${rowIndex + 2}, $${rowIndex + 3}, $${rowIndex + 4}, $${rowIndex + 5}, $${rowIndex + 6}, $${rowIndex + 7}, $${rowIndex + 8}, $${rowIndex + 9}, $${rowIndex + 10})`);
+      values.push(
+        userId,
+        documentId,
+        planId,
+        item.title,
+        item.description,
+        item.provider_or_specialist,
+        item.appointment_date,
+        item.status,
+        item.status === "completed" ? new Date() : null,
+        item.source_text,
+        item.record_fingerprint,
+      );
+    });
+    await client.query(
+      `INSERT INTO follow_ups
+         (user_id, document_id, verified_care_plan_id, title, description,
+          provider_or_specialist, appointment_date, status, completed_at,
+          source_text, record_fingerprint)
+       VALUES ${placeholders.join(", ")}
+       ON CONFLICT (user_id, record_fingerprint) WHERE record_fingerprint IS NOT NULL
+       DO UPDATE SET updated_at = NOW()`,
+      values
+    );
+  }
+
+  if (mappedTests.length > 0) {
+    const values: Array<unknown> = [];
+    const placeholders: string[] = [];
+    mappedTests.forEach((item, index) => {
+      const rowIndex = index * 11 + 1;
+      placeholders.push(`($${rowIndex}, $${rowIndex + 1}, $${rowIndex + 2}, $${rowIndex + 3}, $${rowIndex + 4}, $${rowIndex + 5}, $${rowIndex + 6}, $${rowIndex + 7}, $${rowIndex + 8}, $${rowIndex + 9}, $${rowIndex + 10})`);
+      values.push(
+        userId,
+        documentId,
+        planId,
+        item.test_name,
+        item.instructions,
+        item.scheduled_date,
+        item.result_summary,
+        item.status,
+        item.status === "completed" ? new Date() : null,
+        item.source_text,
+        item.record_fingerprint,
+      );
+    });
+    await client.query(
+      `INSERT INTO medical_tests
+         (user_id, document_id, verified_care_plan_id, test_name, instructions,
+          scheduled_date, result_summary, status, completed_at,
+          source_text, record_fingerprint)
+       VALUES ${placeholders.join(", ")}
+       ON CONFLICT (user_id, record_fingerprint) WHERE record_fingerprint IS NOT NULL
+       DO UPDATE SET updated_at = NOW()`,
       values
     );
   }
@@ -428,6 +533,16 @@ export const confirmDocumentAnalysis = async (req: Request, res: Response) => {
       );
       versionNumber = versionResult.rows[0]?.version_number ?? versionNumber;
       await syncVerifiedCarePlanTrackers(
+        {
+          id: carePlan.id,
+          user_id: ownerId,
+          document_id: carePlan.document_id,
+          verified_extraction: validation.data,
+        },
+        ownerId,
+        client
+      );
+      await syncVerifiedCarePlanTaskRecords(
         {
           id: carePlan.id,
           user_id: ownerId,

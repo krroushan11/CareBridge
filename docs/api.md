@@ -191,6 +191,59 @@ taken eligible doses / all eligible scheduled doses × 100
 Eligible doses are scheduled at or before the current time; future doses are
 not included. When no eligible doses exist, adherence is returned as `null`.
 
+## Follow-up and medical-test tracking
+
+All tracking endpoints require authentication and return only records owned by
+the authenticated user. Dates use `YYYY-MM-DD`; times use `HH:MM` or
+`HH:MM:SS`.
+
+### Follow-ups
+
+- `GET /api/follow-ups` — list owner-scoped follow-ups with per-status counts
+  and a derived `overdue` flag. Optional filters: `status` (one of `pending`,
+  `scheduled`, `completed`, `cancelled`, `missed`), `from`, and `to`.
+- `POST /api/follow-ups` — create a follow-up. Requires `title`; optional
+  fields are `description`, `provider_or_specialist`, `appointment_date`,
+  `appointment_time`, `due_date`, and `status`.
+- `GET /api/follow-ups/:id` — retrieve one owned follow-up.
+- `PATCH /api/follow-ups/:id` — update any subset of the fields above. Setting a
+  terminal status stamps its timestamp; reopening clears it.
+- `POST /api/follow-ups/:id/complete` — mark an owned follow-up `completed`.
+  Repeating the action returns the existing record with `already_completed: true`.
+- `DELETE /api/follow-ups/:id` — delete an owned follow-up.
+- `GET /api/follow-ups/reminders/upcoming` — active follow-ups dated within the
+  window (`days`, 1–90, default 14).
+
+### Medical tests
+
+- `GET /api/medical-tests` — list owner-scoped tests with per-status counts and
+  a derived `overdue` flag. Optional filters: `status` (one of `pending`,
+  `scheduled`, `completed`, `cancelled`), `from`, and `to`.
+- `POST /api/medical-tests` — create a test. Requires `test_name`; optional
+  fields are `instructions`, `scheduled_date`, `result_summary`, and `status`.
+- `GET /api/medical-tests/:id` — retrieve one owned test.
+- `PATCH /api/medical-tests/:id` — update any subset of the fields above.
+- `POST /api/medical-tests/:id/complete` — mark an owned test `completed`, with
+  an optional `result_summary`. The scheduled date is preserved and no result is
+  invented; repeating the action returns `already_completed: true`.
+- `DELETE /api/medical-tests/:id` — delete an owned test.
+- `GET /api/medical-tests/reminders/upcoming` — active tests dated within the
+  window (`days`, 1–90, default 14).
+
+### Combined reminders
+
+- `GET /api/reminders/upcoming` — one owner-scoped feed of active follow-ups
+  (appointment date, falling back to due date) and active medical tests
+  (scheduled date) within the window (`days`, 1–90, default 14), ordered by date.
+
+Completed, cancelled, and missed records never appear in reminder responses.
+Status lifecycles are enforced on write: `completed` requires `completed_at` and
+`cancelled` requires `cancelled_at`, both stamped by the backend. Records
+created from a verified care plan carry a fingerprint unique per owner, so
+re-confirming a document does not duplicate task records and never overwrites an
+owner's status or result changes. Follow-ups and tests with no determinable date
+remain undated rather than receiving an invented date.
+
 ## AI structured extraction and draft care plans
 
 The structured extraction endpoint reuses the completed-document flow:

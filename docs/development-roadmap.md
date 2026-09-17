@@ -154,3 +154,22 @@ Status: **[✓] IMPLEMENTED**
 - [✓] Taken, skipped, and grace-period-based missed-dose tracking
 - [✓] Stored-history adherence analytics without future-dose penalties
 - [✓] Medication dashboard with browser notification opt-in while open
+
+## Phase 11 - Follow-up and Test Tracking
+
+Status: **[✓] IMPLEMENTED**
+
+- [✓] Owner-scoped follow-up records with structured dates, times, provider, and description
+- [✓] Owner-scoped medical-test records with scheduled date, instructions, and result summary
+- [✓] Controlled status lifecycles with timestamp consistency constraints
+- [✓] Complete, cancel, reopen, update, and delete actions with owner scoping
+- [✓] Status and date-range filters with derived overdue flags and counts
+- [✓] Upcoming reminder feeds for follow-ups, medical tests, and a combined view
+- [✓] Verified-care-plan follow-ups and tests sync into tracking records with duplicate protection
+- [✓] AI dates are normalized when deterministic and never invented
+- [✓] Tracking dashboard with filters, metrics, and task actions
+- [✓] Backend and frontend tests for tracking behavior, ownership, and reminder eligibility
+
+Follow-ups and medical tests are user-managed task records. They do not
+administer care, results stored from documents are never inferred, and reminder
+feeds remain informational only.

@@ -6,7 +6,10 @@ import { pool } from "./config/database";
 import analysisRoutes from "./routes/analysisRoutes";
 import authRoutes from "./routes/authRoutes";
 import documentRoutes from "./routes/documentRoutes";
+import followUpRoutes from "./routes/followUpRoutes";
+import medicalTestRoutes from "./routes/medicalTestRoutes";
 import medicationRoutes from "./routes/medicationRoutes";
+import reminderRoutes from "./routes/reminderRoutes";
 import { validateJwtSecret } from "./middlewares/authMiddleware";
 import { startDocumentProcessingWorker } from "./services/documentProcessingQueue";
 
@@ -30,6 +33,9 @@ app.use("/api/auth", authRoutes);
 app.use("/api/documents", documentRoutes);
 app.use("/api/analysis", analysisRoutes);
 app.use("/api/medications", medicationRoutes);
+app.use("/api/follow-ups", followUpRoutes);
+app.use("/api/medical-tests", medicalTestRoutes);
+app.use("/api/reminders", reminderRoutes);
 
 startDocumentProcessingWorker();
 

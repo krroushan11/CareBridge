@@ -11,6 +11,9 @@ export const pool = new Pool({
   password: process.env.DB_PASSWORD,
 });
 
-pool.connect()
+// Connectivity check: pool.query borrows and releases a client, whereas
+// pool.connect() would keep a client checked out for the process lifetime and
+// prevent pool.end() (used by the test suites) from ever completing.
+pool.query("SELECT 1")
   .then(() => console.log("🚀 PostgreSQL Connected Successfully"))
   .catch((error) => console.error("Database Connection Error:", error));

@@ -6,6 +6,17 @@ import {
   shouldRequestNotificationPermission,
   writeReminderSoundPreference,
 } from "./reminderUtils.js";
+import {
+  dashboardMetrics,
+  effectiveDate,
+  FOLLOW_UP_STATUSES,
+  formatTrackingDate,
+  isOverdue,
+  isReminderEligible,
+  MEDICAL_TEST_STATUSES,
+  reminderReadyItems,
+  statusBadgeClass,
+} from "./trackerUtils.js";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000";
 const main = document.querySelector("main");
@@ -38,6 +49,9 @@ const formatJson = (value) => JSON.stringify(value ?? [], null, 2);
 const fields = ["medications", "findings", "tests", "follow_up", "warnings", "uncertainty_notes"];
 let currentExtraction;
 let medicationReminderTimer;
+let followUpFilters = { status: "", from: "", to: "" };
+let medicalTestFilters = { status: "", from: "", to: "" };
+const TERMINAL_SET = new Set(["completed", "cancelled"]);
 const notifiedDoseIds = new Set();
 const soundedDoseIds = new Set();
 const snoozedUntilByDoseId = new Map();
@@ -126,11 +140,124 @@ const renderClinicianDashboard = async () => {
 const medicationLabel = (medication) => [medication.name || medication.medication_name, medication.dosage, medication.dosage_unit].filter(Boolean).join(" ");
 const displayDateTime = (value) => new Date(value).toLocaleString();
 
+const trackerQuery = (filters) => {
+  const params = new URLSearchParams();
+  if (filters.status) params.set("status", filters.status);
+  if (filters.from) params.set("from", filters.from);
+  if (filters.to) params.set("to", filters.to);
+  const query = params.toString();
+  return query ? `?${query}` : "";
+};
+
+const metricChips = (label, metric) => `
+  <p class="metric-row"><strong>${escapeHtml(label)}</strong>
+    <span class="chip">Total ${metric.total}</span>
+    <span class="chip">Pending ${metric.pending}</span>
+    <span class="chip">Scheduled ${metric.scheduled}</span>
+    <span class="chip">Completed ${metric.completed}</span>
+    ${metric.cancelled !== undefined ? `<span class="chip">Cancelled ${metric.cancelled}</span>` : ""}
+    ${metric.missed !== undefined ? `<span class="chip">Missed ${metric.missed}</span>` : ""}
+    <span class="chip ${metric.overdue ? "chip-alert" : ""}">Overdue ${metric.overdue}</span>
+  </p>`;
+
+const followUpCard = (followUp) => {
+  const date = formatTrackingDate(effectiveDate(followUp));
+  const time = followUp.appointment_time ? String(followUp.appointment_time).slice(0, 5) : null;
+  const active = isReminderEligible(followUp);
+  return `<article class="data-card">
+    <h3>${escapeHtml(followUp.title)} <span class="badge ${statusBadgeClass(followUp.status)}">${escapeHtml(followUp.status)}</span>${followUp.overdue ? " <span class=\"badge badge-missed\">overdue</span>" : ""}</h3>
+    ${followUp.description ? `<p>${escapeHtml(followUp.description)}</p>` : ""}
+    ${followUp.provider_or_specialist ? `<p class="muted">With: ${escapeHtml(followUp.provider_or_specialist)}</p>` : ""}
+    <p><strong>${date}</strong>${time ? ` at ${escapeHtml(time)}` : ""}${!effectiveDate(followUp) ? " — add a date to enable reminders" : ""}</p>
+    <div class="actions">
+      ${active && followUp.status !== "completed" ? `<button data-followup-complete="${followUp.id}">Mark complete</button>` : ""}
+      ${active && followUp.status !== "scheduled" ? `<button class="secondary" data-followup-status="${followUp.id}" data-value="scheduled">Mark scheduled</button>` : ""}
+      ${followUp.status !== "pending" ? `<button class="secondary" data-followup-status="${followUp.id}" data-value="pending">Reopen as pending</button>` : ""}
+      ${!TERMINAL_SET.has(followUp.status) ? `<button class="secondary" data-followup-status="${followUp.id}" data-value="cancelled">Cancel</button>` : ""}
+      ${!TERMINAL_SET.has(followUp.status) ? `<button class="secondary" data-followup-delete="${followUp.id}">Delete</button>` : ""}
+    </div>
+  </article>`;
+};
+
+const medicalTestCard = (test) => {
+  const date = formatTrackingDate(test.scheduled_date);
+  const active = isReminderEligible(test);
+  return `<article class="data-card">
+    <h3>${escapeHtml(test.test_name)} <span class="badge ${statusBadgeClass(test.status)}">${escapeHtml(test.status)}</span>${test.overdue ? " <span class=\"badge badge-missed\">overdue</span>" : ""}</h3>
+    ${test.instructions ? `<p>${escapeHtml(test.instructions)}</p>` : ""}
+    <p><strong>${date}</strong>${test.result_summary ? ` — Result: ${escapeHtml(test.result_summary)}` : ""}</p>
+    <div class="actions">
+      ${active && test.status !== "completed" ? `<button data-test-complete="${test.id}">Mark complete</button>` : ""}
+      ${active && test.status !== "scheduled" ? `<button class="secondary" data-test-status="${test.id}" data-value="scheduled">Mark scheduled</button>` : ""}
+      ${test.status !== "pending" ? `<button class="secondary" data-test-status="${test.id}" data-value="pending">Reopen as pending</button>` : ""}
+      ${!TERMINAL_SET.has(test.status) ? `<button class="secondary" data-test-status="${test.id}" data-value="cancelled">Cancel</button>` : ""}
+      ${!TERMINAL_SET.has(test.status) ? `<button class="secondary" data-test-delete="${test.id}">Delete</button>` : ""}
+    </div>
+  </article>`;
+};
+
+const filterControls = (kind, filters, statuses) => `
+  <div class="filter-row">
+    <label>Status
+      <select data-filter-kind="${kind}" data-filter-field="status">
+        ${["", ...statuses].map((status) => `<option value="${status}" ${filters.status === status ? "selected" : ""}>${status || "All statuses"}</option>`).join("")}
+      </select>
+    </label>
+    <label>From <input type="date" data-filter-kind="${kind}" data-filter-field="from" value="${escapeHtml(filters.from)}"></label>
+    <label>To <input type="date" data-filter-kind="${kind}" data-filter-field="to" value="${escapeHtml(filters.to)}"></label>
+    <button class="secondary" data-filter-apply="${kind}">Apply filters</button>
+  </div>`;
+
+const renderTrackingSections = (followUps, medicalTests, followUpFilterState, testFilterState, metrics) => {
+  const upcoming = reminderReadyItems([...followUps, ...medicalTests], 14);
+  return `
+  <section class="card"><h2>Care tracking overview</h2>
+    ${metricChips("Follow-ups", metrics.follow_ups)}
+    ${metricChips("Medical tests", metrics.medical_tests)}
+    <p class="muted">Metrics come from your saved records and update as statuses change.</p>
+  </section>
+  <section class="card"><h2>Upcoming actions (next 14 days)</h2>
+    ${upcoming.length ? `<ul>${upcoming.map((item) => `<li><strong>${escapeHtml(item.title || item.test_name)}</strong> — ${formatTrackingDate(effectiveDate(item))}${item.appointment_time ? ` at ${escapeHtml(String(item.appointment_time).slice(0, 5))}` : ""} <span class="badge ${statusBadgeClass(item.status)}">${escapeHtml(item.status)}</span></li>`).join("")}</ul>` : "<p>No upcoming follow-ups or tests in the next 14 days.</p>"}
+  </section>
+  <section class="card"><h2>Follow-ups</h2>
+    ${filterControls("follow_up", followUpFilterState, FOLLOW_UP_STATUSES)}
+    <form id="followup-form"><div class="data-grid">
+      <label>Title <input required name="title" maxlength="255" placeholder="e.g. Follow up with cardiology"></label>
+      <label>Provider / specialist <input name="provider_or_specialist" maxlength="255"></label>
+      <label>Appointment date <input type="date" name="appointment_date"></label>
+      <label>Appointment time <input type="time" name="appointment_time"></label>
+      <label>Due date (task) <input type="date" name="due_date"></label>
+      <label>Status
+        <select name="status">${FOLLOW_UP_STATUSES.map((status) => `<option value="${status}" ${status === "pending" ? "selected" : ""}>${status}</option>`).join("")}</select>
+      </label>
+    </div><label>Description / instructions <textarea name="description" rows="2" maxlength="2000"></textarea></label><button>Add follow-up</button><p id="followup-message" class="message" role="alert"></p></form>
+    <div class="data-grid">${followUps.length ? followUps.map(followUpCard).join("") : "<p class=\"muted\">No follow-ups match the current filters.</p>"}</div>
+  </section>
+  <section class="card"><h2>Medical tests</h2>
+    ${filterControls("medical_test", testFilterState, MEDICAL_TEST_STATUSES)}
+    <form id="test-form"><div class="data-grid">
+      <label>Test name <input required name="test_name" maxlength="255" placeholder="e.g. HbA1c blood test"></label>
+      <label>Scheduled date <input type="date" name="scheduled_date"></label>
+      <label>Status
+        <select name="status">${MEDICAL_TEST_STATUSES.map((status) => `<option value="${status}" ${status === "pending" ? "selected" : ""}>${status}</option>`).join("")}</select>
+      </label>
+    </div><label>Instructions <textarea name="instructions" rows="2" maxlength="2000"></textarea></label><button>Add medical test</button><p id="test-message" class="message" role="alert"></p></form>
+    <div class="data-grid">${medicalTests.length ? medicalTests.map(medicalTestCard).join("") : "<p class=\"muted\">No medical tests match the current filters.</p>"}</div>
+  </section>`;
+};
+
 const renderMedicationDashboard = async () => {
-  main.innerHTML = `<section class="card loading" aria-live="polite">Loading medication dashboard…</section>`;
+  main.innerHTML = `<section class="card loading" aria-live="polite">Loading health dashboard…</section>`;
   try {
-    const result = await request("/api/medications");
+    const [result, followUpResult, testResult] = await Promise.all([
+      request("/api/medications"),
+      request(`/api/follow-ups${trackerQuery(followUpFilters)}`),
+      request(`/api/medical-tests${trackerQuery(medicalTestFilters)}`),
+    ]);
     const { medications, analytics } = result;
+    const followUps = followUpResult.follow_ups || [];
+    const medicalTests = testResult.medical_tests || [];
+    const metrics = dashboardMetrics(followUps, medicalTests);
     const reminderPermission = "Notification" in window ? Notification.permission : "unsupported";
     const soundEnabled = readReminderSoundPreference(window.localStorage);
     const dueDoses = findDueDoses({
@@ -139,7 +266,7 @@ const renderMedicationDashboard = async () => {
       snoozedUntilById: snoozedUntilByDoseId,
     });
     main.innerHTML = `
-      <header class="topbar"><h1>Medication dashboard</h1><button id="logout">Sign out</button></header>
+      <header class="topbar"><h1>Health dashboard</h1><button id="logout">Sign out</button></header>
       <section class="card disclaimer"><strong>Medication safety</strong><p>Use this tracker to record your medication routine. Confirm medication instructions with your clinician or pharmacist.</p></section>
       <section class="card"><h2>Adherence overview</h2><p><strong>${analytics.adherence_percentage ?? "—"}${analytics.adherence_percentage === null ? "" : "%"}</strong> adherence from ${analytics.taken_doses} taken of ${analytics.eligible_doses} eligible scheduled doses.</p><p class="muted">Skipped: ${analytics.skipped_doses}. Missed: ${analytics.missed_doses}. Future doses are not included in adherence.</p></section>
       <section class="card"><h2>Reminders</h2><p class="muted">This page checks due doses while it is open. Browser notifications require your permission and may be blocked by your browser or device.</p><div class="actions"><button class="secondary" id="enable-reminders" ${reminderPermission === "granted" || reminderPermission === "unsupported" ? "disabled" : ""}>${reminderPermission === "granted" ? "Notifications enabled" : reminderPermission === "unsupported" ? "Notifications unavailable" : "Enable browser notifications"}</button><button class="secondary" id="enable-reminder-sound">${soundEnabled ? "Reminder sound enabled" : "Enable Reminder Sound"}</button><button class="secondary" id="test-reminder-sound">Test Reminder Sound</button><button class="secondary" id="mute-reminders">Mute reminders for this page</button></div><p id="reminder-message" class="message" role="status"></p></section>
@@ -154,7 +281,8 @@ const renderMedicationDashboard = async () => {
       </div><label>Instructions <textarea name="instructions" rows="2" maxlength="2000"></textarea></label><label>Notes <textarea name="notes" rows="2" maxlength="2000"></textarea></label><button>Add medication</button><p id="medication-message" class="message" role="alert"></p></form></section>
       <section class="card"><h2>Today's medications</h2>${medications.length ? medications.map((medication) => `<article class="data-card"><h3>${escapeHtml(medicationLabel(medication))}</h3><p>${escapeHtml(medication.frequency)} at ${escapeHtml(medication.dose_times.join(", "))}</p><p>Adherence: <strong>${medication.adherence.percentage ?? "—"}${medication.adherence.percentage === null ? "" : "%"}</strong> (${medication.adherence.taken_doses}/${medication.adherence.eligible_doses} eligible doses taken)</p>${medication.today_doses.length ? medication.today_doses.map((dose) => `<p><strong>${escapeHtml(displayDateTime(dose.scheduled_at))}</strong> — ${escapeHtml(dose.status)} ${dose.status === "scheduled" ? `<button data-dose-action="taken" data-medication-id="${medication.id}" data-scheduled-at="${dose.scheduled_at}">Taken</button> <button class="secondary" data-dose-action="skipped" data-medication-id="${medication.id}" data-scheduled-at="${dose.scheduled_at}">Skipped</button>` : ""}</p>`).join("") : "<p class=\"muted\">No doses scheduled today.</p>"}</article>`).join("") : "<p>No medications yet. Add one above to begin tracking.</p>"}</section>
       <section class="card"><h2>Upcoming doses</h2>${analytics.upcoming_doses.length ? `<ul>${analytics.upcoming_doses.map((dose) => `<li>${escapeHtml(medicationLabel(dose))} — ${escapeHtml(displayDateTime(dose.scheduled_at))}</li>`).join("")}</ul>` : "<p>No upcoming doses in the current schedule window.</p>"}</section>
-      <section class="card"><h2>Recent missed doses</h2>${analytics.recent_missed_doses.length ? `<ul>${analytics.recent_missed_doses.map((dose) => `<li>${escapeHtml(medicationLabel(dose))} — ${escapeHtml(displayDateTime(dose.scheduled_at))}</li>`).join("")}</ul>` : "<p>No missed doses recorded.</p>"}</section>`;
+      <section class="card"><h2>Recent missed doses</h2>${analytics.recent_missed_doses.length ? `<ul>${analytics.recent_missed_doses.map((dose) => `<li>${escapeHtml(medicationLabel(dose))} — ${escapeHtml(displayDateTime(dose.scheduled_at))}</li>`).join("")}</ul>` : "<p>No missed doses recorded.</p>"}</section>
+      ${renderTrackingSections(followUps, medicalTests, followUpFilters, medicalTestFilters, metrics)}`;
     document.querySelector("#logout").onclick = () => { localStorage.removeItem(tokenKey); renderAuth(); };
     document.querySelector("#medication-form").onsubmit = async (event) => {
       event.preventDefault();
@@ -175,6 +303,62 @@ const renderMedicationDashboard = async () => {
         await request(`/api/medications/${button.dataset.medicationId}/${button.dataset.doseAction}`, { method: "POST", body: JSON.stringify({ scheduled_at: button.dataset.scheduledAt }) });
         renderMedicationDashboard();
       } catch (error) { window.alert(error.message); }
+    });
+    document.querySelector("#followup-form").onsubmit = async (event) => {
+      event.preventDefault();
+      const form = new FormData(event.currentTarget);
+      const message = document.querySelector("#followup-message");
+      try {
+        await request("/api/follow-ups", { method: "POST", body: JSON.stringify({
+          title: form.get("title"),
+          description: form.get("description") || null,
+          provider_or_specialist: form.get("provider_or_specialist") || null,
+          appointment_date: form.get("appointment_date") || null,
+          appointment_time: form.get("appointment_time") || null,
+          due_date: form.get("due_date") || null,
+          status: form.get("status"),
+        }) });
+        renderMedicationDashboard();
+      } catch (error) { message.textContent = error.message; }
+    };
+    document.querySelector("#test-form").onsubmit = async (event) => {
+      event.preventDefault();
+      const form = new FormData(event.currentTarget);
+      const message = document.querySelector("#test-message");
+      try {
+        await request("/api/medical-tests", { method: "POST", body: JSON.stringify({
+          test_name: form.get("test_name"),
+          instructions: form.get("instructions") || null,
+          scheduled_date: form.get("scheduled_date") || null,
+          status: form.get("status"),
+        }) });
+        renderMedicationDashboard();
+      } catch (error) { message.textContent = error.message; }
+    };
+    const trackerAction = async (action, path, confirmText) => {
+      if (confirmText && !window.confirm(confirmText)) return;
+      try { await request(path, action); renderMedicationDashboard(); }
+      catch (error) { window.alert(error.message); }
+    };
+    document.querySelectorAll("[data-followup-complete]").forEach((button) => button.onclick = () =>
+      trackerAction({ method: "POST" }, `/api/follow-ups/${button.dataset.followupComplete}/complete`));
+    document.querySelectorAll("[data-followup-status]").forEach((button) => button.onclick = () =>
+      trackerAction({ method: "PATCH", body: JSON.stringify({ status: button.dataset.value }) }, `/api/follow-ups/${button.dataset.followupStatus}`));
+    document.querySelectorAll("[data-followup-delete]").forEach((button) => button.onclick = () =>
+      trackerAction({ method: "DELETE" }, `/api/follow-ups/${button.dataset.followupDelete}`, "Delete this follow-up? This cannot be undone."));
+    document.querySelectorAll("[data-test-complete]").forEach((button) => button.onclick = () =>
+      trackerAction({ method: "POST", body: "{}" }, `/api/medical-tests/${button.dataset.testComplete}/complete`));
+    document.querySelectorAll("[data-test-status]").forEach((button) => button.onclick = () =>
+      trackerAction({ method: "PATCH", body: JSON.stringify({ status: button.dataset.value }) }, `/api/medical-tests/${button.dataset.testStatus}`));
+    document.querySelectorAll("[data-test-delete]").forEach((button) => button.onclick = () =>
+      trackerAction({ method: "DELETE" }, `/api/medical-tests/${button.dataset.testDelete}`, "Delete this medical test? This cannot be undone."));
+    document.querySelectorAll("[data-filter-apply]").forEach((button) => button.onclick = () => {
+      const kind = button.dataset.filterApply;
+      const target = kind === "follow_up" ? followUpFilters : medicalTestFilters;
+      document.querySelectorAll(`[data-filter-kind="${kind}"]`).forEach((input) => {
+        target[input.dataset.filterField] = input.value;
+      });
+      renderMedicationDashboard();
     });
     document.querySelector("#enable-reminders").onclick = async () => {
       const message = document.querySelector("#reminder-message");

@@ -16,6 +16,9 @@ services:
       - ./backend/database/migrations/20260912_create_verified_care_plans.sql:/docker-entrypoint-initdb.d/005_verified_care_plans.sql:ro
       - ./backend/database/migrations/20260912_add_role_rbac.sql:/docker-entrypoint-initdb.d/006_role_rbac.sql:ro
       - ./backend/database/migrations/20260917_phase8_verification_history.sql:/docker-entrypoint-initdb.d/007_phase8_verification_history.sql:ro
+      - ./backend/database/migrations/20260918_phase9_verified_care_plan_trackers.sql:/docker-entrypoint-initdb.d/008_phase9_verified_care_plan_trackers.sql:ro
+      - ./backend/database/migrations/20260919_phase10_medication_management.sql:/docker-entrypoint-initdb.d/009_phase10_medication_management.sql:ro
+      - ./backend/database/migrations/20260920_phase11_follow_ups_tests.sql:/docker-entrypoint-initdb.d/010_phase11_follow_ups_tests.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
