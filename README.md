@@ -4,6 +4,30 @@
 
 Phase 11 turns document-derived follow-ups and medical tests into owner-scoped, trackable tasks. Records come from either verified care plans or direct user entry, keep their document traceability, and move through controlled status lifecycles with filtered lists, reminder feeds, and a tracking dashboard. Phase 9 verified-care-plan records and Phase 10 medication scheduling remain unchanged.
 
+## Phase 12 — Care Management Dashboard
+
+Phase 12 brings the existing medication, follow-up, and medical-test data together in a single care management dashboard. It reuses the project’s current medication, follow-up, and medical-test APIs instead of creating duplicates, and it keeps the dashboard aligned with the app’s existing frontend architecture.
+
+### Included functionality
+
+- Medication summary cards and schedule view
+- Medication adherence tracking and analytics
+- Upcoming follow-up display and due/overdue awareness
+- Medical test status tracking
+- Recovery task aggregation from active follow-up and test records
+- Unified care summary dashboard
+- Loading, empty, and per-section error states
+- Responsive dashboard layout
+
+### Validation summary
+
+- Phase 12 tracker tests: 10 passed, 0 failed
+- Existing reminder/follow-up tests: 4 passed, 0 failed
+- Frontend build: passed
+- Backend TypeScript validation: passed
+
+Detailed documentation: [docs/PHASE12_README.md](docs/PHASE12_README.md)
+
 ## Objectives
 
 - Persist owner-scoped follow-up appointments and tasks with structured dates and times.

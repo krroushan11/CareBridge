@@ -87,3 +87,103 @@ export const dashboardMetrics = (followUps = [], medicalTests = []) => {
 
   return metrics;
 };
+
+export const medicationDoseStatus = (dose, now = new Date()) => {
+  if (!dose || !dose.scheduled_at) return "upcoming";
+  if (dose.status === "taken") return "completed";
+  if (dose.status === "missed") return "missed";
+  if (dose.status === "skipped") return "completed";
+  const scheduledAt = new Date(dose.scheduled_at).getTime();
+  if (Number.isNaN(scheduledAt)) return "upcoming";
+  return scheduledAt <= now.getTime() ? "due" : "upcoming";
+};
+
+export const medicationStatusLabel = (dose) => {
+  const status = medicationDoseStatus(dose);
+  return { upcoming: "Upcoming", due: "Due", completed: "Completed", missed: "Missed" }[status] || "Upcoming";
+};
+
+export const buildMedicationSchedule = (medications = [], analytics = {}) => {
+  const items = [];
+
+  medications.forEach((medication) => {
+    const doseList = Array.isArray(medication.today_doses) ? medication.today_doses : [];
+    doseList.forEach((dose) => {
+      items.push({
+        ...dose,
+        medication_id: medication.id,
+        medication_name: medication.name || medication.medication_name || dose.medication_name || "Medication",
+        dosage: medication.dosage || dose.dosage,
+        dosage_unit: medication.dosage_unit || dose.dosage_unit,
+      });
+    });
+  });
+
+  (analytics.upcoming_doses || []).forEach((dose) => {
+    items.push({
+      ...dose,
+      medication_name: dose.medication_name || "Medication",
+    });
+  });
+
+  (analytics.recent_missed_doses || []).forEach((dose) => {
+    items.push({
+      ...dose,
+      medication_name: dose.medication_name || "Medication",
+    });
+  });
+
+  return [...items].sort((a, b) => { 
+    const valueA = a.scheduled_at ? new Date(a.scheduled_at).getTime() : Number.MAX_SAFE_INTEGER;
+    const valueB = b.scheduled_at ? new Date(b.scheduled_at).getTime() : Number.MAX_SAFE_INTEGER;
+    return valueA - valueB;
+  });
+};
+
+export const aggregateMedicationAdherence = (medications = []) => {
+  const totalMedications = medications.filter((medication) => medication.active !== false).length;
+  const todayMedications = medications.filter((medication) => Array.isArray(medication.today_doses) && medication.today_doses.length > 0).length;
+  const scheduled = medications.reduce((total, medication) => total + Number(medication.adherence?.eligible_doses || 0), 0);
+  const completed = medications.reduce((total, medication) => total + Number(medication.adherence?.taken_doses || 0), 0);
+  const missed = medications.reduce((total, medication) => total + Number(medication.adherence?.missed_doses || 0), 0);
+
+  return {
+    totalMedications,
+    todayMedications,
+    scheduledDoses: scheduled,
+    completedDoses: completed,
+    missedDoses: missed,
+    adherencePercentage: scheduled === 0 ? 0 : Number(((completed / scheduled) * 100).toFixed(1)),
+  };
+};
+
+export const buildCareManagementSummary = ({ medications = [], followUps = [], medicalTests = [] }, now = new Date()) => {
+  const activeFollowUps = [...followUps].filter((record) => record && !["completed", "cancelled"].includes(record.status)).sort((a, b) => {
+    const aDate = effectiveDate(a) ? new Date(`${String(effectiveDate(a)).slice(0, 10)}T00:00:00Z`).getTime() : Number.MAX_SAFE_INTEGER;
+    const bDate = effectiveDate(b) ? new Date(`${String(effectiveDate(b)).slice(0, 10)}T00:00:00Z`).getTime() : Number.MAX_SAFE_INTEGER;
+    return aDate - bDate;
+  });
+  const activeMedicalTests = [...medicalTests].filter((record) => record && !["completed", "cancelled"].includes(record.status)).sort((a, b) => {
+    const aDate = effectiveDate(a) ? new Date(`${String(effectiveDate(a)).slice(0, 10)}T00:00:00Z`).getTime() : Number.MAX_SAFE_INTEGER;
+    const bDate = effectiveDate(b) ? new Date(`${String(effectiveDate(b)).slice(0, 10)}T00:00:00Z`).getTime() : Number.MAX_SAFE_INTEGER;
+    return aDate - bDate;
+  });
+
+  const medicationSummary = aggregateMedicationAdherence(medications);
+  const nextMedication = medications
+    .filter((medication) => Array.isArray(medication.today_doses) && medication.today_doses.length > 0)
+    .sort((a, b) => {
+      const aDate = a.today_doses[0]?.scheduled_at ? new Date(a.today_doses[0].scheduled_at).getTime() : Number.MAX_SAFE_INTEGER;
+      const bDate = b.today_doses[0]?.scheduled_at ? new Date(b.today_doses[0].scheduled_at).getTime() : Number.MAX_SAFE_INTEGER;
+      return aDate - bDate;
+    })[0];
+
+  return {
+    medication: medicationSummary,
+    nextMedication,
+    nextFollowUp: activeFollowUps[0] || null,
+    nextMedicalTest: activeMedicalTests[0] || null,
+    pendingRecoveryTasks: [...activeFollowUps, ...activeMedicalTests].filter((record) => record && record.status !== "completed" && record.status !== "cancelled").length,
+    createdAt: now.toISOString(),
+  };
+};

@@ -7,6 +7,7 @@ import {
   writeReminderSoundPreference,
 } from "./reminderUtils.js";
 import {
+  buildCareManagementSummary,
   dashboardMetrics,
   effectiveDate,
   FOLLOW_UP_STATUSES,
@@ -246,112 +247,152 @@ const renderTrackingSections = (followUps, medicalTests, followUpFilterState, te
   </section>`;
 };
 
+const sectionCard = (title, body, className = "card") => `<section class="${className}"><h2>${escapeHtml(title)}</h2>${body}</section>`;
+const medicationMetricCard = (title, value, subtext = "") => `
+  <article class="data-card">
+    <p class="muted">${escapeHtml(title)}</p>
+    <h3>${escapeHtml(value)}</h3>
+    ${subtext ? `<p class="muted">${escapeHtml(subtext)}</p>` : ""}
+  </article>`;
+
 const renderMedicationDashboard = async () => {
-  main.innerHTML = `<section class="card loading" aria-live="polite">Loading health dashboard…</section>`;
+  main.innerHTML = `<section class="card loading" aria-live="polite">Loading care management dashboard…</section>`;
+
+  const medicationSection = async () => {
+    try {
+      const result = await request("/api/medications");
+      const { medications = [], analytics = {} } = result;
+      const adherence = analytics.adherence_percentage ?? (medications.length ? medications.reduce((sum, medication) => sum + (medication.adherence?.percentage ?? 0), 0) / medications.length : 0);
+      const schedule = buildMedicationSchedule(medications, analytics);
+      const upcoming = schedule.filter((dose) => medicationDoseStatus(dose) !== "completed" && medicationDoseStatus(dose) !== "missed").slice(0, 8);
+      const summary = aggregateMedicationAdherence(medications);
+      return `
+        <section class="card">
+          <h2>Medication dashboard</h2>
+          <div class="data-grid">
+            ${medicationMetricCard("Active medications", String(summary.totalMedications), "Current active medication list")}
+            ${medicationMetricCard("Today's medications", String(summary.todayMedications), "Medication entries with doses today")}
+            ${medicationMetricCard("Completed doses", String(summary.completedDoses), "Completed scheduled doses")}
+            ${medicationMetricCard("Missed doses", String(summary.missedDoses), "Missed dose count")}
+            ${medicationMetricCard("Upcoming doses", String((analytics.upcoming_doses || []).length), "Scheduled future doses")}
+            ${medicationMetricCard("Adherence", `${adherence}${Number.isFinite(adherence) ? "%" : ""}`, "Completed ÷ scheduled doses")}
+          </div>
+        </section>
+        <section class="card">
+          <h2>Medication schedule</h2>
+          ${upcoming.length ? `<div class="data-grid">${upcoming.map((dose) => `<article class="data-card"><h3>${escapeHtml(dose.medication_name || medicationLabel(dose))}</h3><p><strong>${escapeHtml(formatTrackingDate(dose.scheduled_at ? dose.scheduled_at.slice(0, 10) : null))}</strong> ${dose.scheduled_at ? escapeHtml(new Date(dose.scheduled_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })) : ""}</p><p>Dosage: ${escapeHtml([dose.dosage, dose.dosage_unit].filter(Boolean).join(" ") || "Not specified")}</p><p>Status: <span class="badge ${statusBadgeClass(dose.status === "scheduled" ? "scheduled" : dose.status === "taken" ? "completed" : dose.status === "missed" ? "missed" : "pending")}">${escapeHtml(medicationStatusLabel(dose))}</span></p>${dose.status === "scheduled" ? `<div class="actions"><button data-dose-action="taken" data-medication-id="${dose.medication_id}" data-scheduled-at="${dose.scheduled_at}">Taken</button><button class="secondary" data-dose-action="skipped" data-medication-id="${dose.medication_id}" data-scheduled-at="${dose.scheduled_at}">Skipped</button></div>` : ""}</article>`).join("")}</div>` : `<p>No medications scheduled.</p>`}
+        </section>
+        <section class="card">
+          <h2>Adherence analytics</h2>
+          <div class="data-grid">
+            ${medicationMetricCard("Overall adherence", `${adherence}%`, "Across all scheduled eligible doses")}
+            ${medicationMetricCard("Completed", String(summary.completedDoses), "Doses marked as taken")}
+            ${medicationMetricCard("Missed", String(summary.missedDoses), "Doses missed or overdue")}
+            ${medicationMetricCard("Upcoming", String((analytics.upcoming_doses || []).length), "Scheduled for future dates")}
+          </div>
+        </section>
+      `;
+    } catch (error) {
+      return sectionCard("Medication", `<p class="message">${escapeHtml(error.message || "Unable to load medications")}</p><button class="secondary" data-retry-section="medication">Retry</button>`);
+    }
+  };
+
+  const followUpSection = async () => {
+    try {
+      const result = await request(`/api/follow-ups${trackerQuery(followUpFilters)}`);
+      const followUps = result.follow_ups || [];
+      const summary = followUps.slice(0, 5);
+      return `
+        <section class="card">
+          <h2>Upcoming follow-ups</h2>
+          ${summary.length ? `<div class="data-grid">${summary.map((item) => `<article class="data-card"><h3>${escapeHtml(item.title)}</h3><p><strong>${escapeHtml(formatTrackingDate(effectiveDate(item)))}</strong>${item.appointment_time ? ` at ${escapeHtml(String(item.appointment_time).slice(0, 5))}` : ""}</p><p>Status: <span class="badge ${statusBadgeClass(item.status)}">${escapeHtml(item.status)}</span>${item.overdue ? " <span class=\"badge badge-missed\">overdue</span>" : ""}</p>${item.provider_or_specialist ? `<p class="muted">With: ${escapeHtml(item.provider_or_specialist)}</p>` : ""}</article>`).join("")}</div>` : `<p>No upcoming follow-ups.</p>`}
+        </section>
+      `;
+    } catch (error) {
+      return sectionCard("Follow-ups", `<p class="message">${escapeHtml(error.message || "Failed to retrieve follow-ups")}</p><button class="secondary" data-retry-section="followups">Retry</button>`);
+    }
+  };
+
+  const medicalTestSection = async () => {
+    try {
+      const result = await request(`/api/medical-tests${trackerQuery(medicalTestFilters)}`);
+      const medicalTests = result.medical_tests || [];
+      const summary = medicalTests.slice(0, 5);
+      return `
+        <section class="card">
+          <h2>Medical test status</h2>
+          ${summary.length ? `<div class="data-grid">${summary.map((item) => `<article class="data-card"><h3>${escapeHtml(item.test_name)}</h3><p><strong>${escapeHtml(formatTrackingDate(item.scheduled_date))}</strong></p><p>Status: <span class="badge ${statusBadgeClass(item.status)}">${escapeHtml(item.status)}</span>${item.overdue ? " <span class=\"badge badge-missed\">overdue</span>" : ""}</p>${item.result_summary ? `<p>Result: ${escapeHtml(item.result_summary)}</p>` : ""}</article>`).join("")}</div>` : `<p>No medical tests scheduled.</p>`}
+        </section>
+      `;
+    } catch (error) {
+      return sectionCard("Medical tests", `<p class="message">${escapeHtml(error.message || "Failed to retrieve medical tests")}</p><button class="secondary" data-retry-section="medicaltests">Retry</button>`);
+    }
+  };
+
+  const recoverySection = async () => {
+    try {
+      const [followUpResult, testResult] = await Promise.all([
+        request(`/api/follow-ups${trackerQuery(followUpFilters)}`),
+        request(`/api/medical-tests${trackerQuery(medicalTestFilters)}`),
+      ]);
+      const tasks = [...(followUpResult.follow_ups || []), ...(testResult.medical_tests || [])]
+        .filter((item) => !["completed", "cancelled"].includes(item.status))
+        .slice(0, 8);
+      return `
+        <section class="card">
+          <h2>Recovery tasks</h2>
+          ${tasks.length ? `<div class="data-grid">${tasks.map((item) => `<article class="data-card"><h3>${escapeHtml(item.title || item.test_name)}</h3><p><strong>${escapeHtml(formatTrackingDate(effectiveDate(item)))}</strong></p><p>Status: <span class="badge ${statusBadgeClass(item.status)}">${escapeHtml(item.status)}</span></p>${item.provider_or_specialist ? `<p class="muted">${escapeHtml(item.provider_or_specialist)}</p>` : ""}</article>`).join("")}</div>` : `<p>No recovery tasks.</p>`}
+        </section>
+      `;
+    } catch (error) {
+      return sectionCard("Recovery tasks", `<p class="message">${escapeHtml(error.message || "Failed to retrieve recovery tasks")}</p><button class="secondary" data-retry-section="recovery">Retry</button>`);
+    }
+  };
+
   try {
-    const [result, followUpResult, testResult] = await Promise.all([
-      request("/api/medications"),
-      request(`/api/follow-ups${trackerQuery(followUpFilters)}`),
-      request(`/api/medical-tests${trackerQuery(medicalTestFilters)}`),
+    const [medicationHtml, followUpHtml, testHtml, recoveryHtml] = await Promise.all([
+      medicationSection(),
+      followUpSection(),
+      medicalTestSection(),
+      recoverySection(),
     ]);
-    const { medications, analytics } = result;
-    const followUps = followUpResult.follow_ups || [];
-    const medicalTests = testResult.medical_tests || [];
-    const metrics = dashboardMetrics(followUps, medicalTests);
     const reminderPermission = "Notification" in window ? Notification.permission : "unsupported";
     const soundEnabled = readReminderSoundPreference(window.localStorage);
-    const dueDoses = findDueDoses({
-      dueDoses: analytics.due_doses || [],
-      upcomingDoses: analytics.upcoming_doses || [],
-      snoozedUntilById: snoozedUntilByDoseId,
-    });
-    main.innerHTML = `
-      <header class="topbar"><h1>Health dashboard</h1><button id="logout">Sign out</button></header>
-      <section class="card disclaimer"><strong>Medication safety</strong><p>Use this tracker to record your medication routine. Confirm medication instructions with your clinician or pharmacist.</p></section>
-      <section class="card"><h2>Adherence overview</h2><p><strong>${analytics.adherence_percentage ?? "—"}${analytics.adherence_percentage === null ? "" : "%"}</strong> adherence from ${analytics.taken_doses} taken of ${analytics.eligible_doses} eligible scheduled doses.</p><p class="muted">Skipped: ${analytics.skipped_doses}. Missed: ${analytics.missed_doses}. Future doses are not included in adherence.</p></section>
-      <section class="card"><h2>Reminders</h2><p class="muted">This page checks due doses while it is open. Browser notifications require your permission and may be blocked by your browser or device.</p><div class="actions"><button class="secondary" id="enable-reminders" ${reminderPermission === "granted" || reminderPermission === "unsupported" ? "disabled" : ""}>${reminderPermission === "granted" ? "Notifications enabled" : reminderPermission === "unsupported" ? "Notifications unavailable" : "Enable browser notifications"}</button><button class="secondary" id="enable-reminder-sound">${soundEnabled ? "Reminder sound enabled" : "Enable Reminder Sound"}</button><button class="secondary" id="test-reminder-sound">Test Reminder Sound</button><button class="secondary" id="mute-reminders">Mute reminders for this page</button></div><p id="reminder-message" class="message" role="status"></p></section>
-      ${dueDoses.length ? `<section class="card disclaimer" id="due-reminders"><h2>Medication due now</h2>${dueDoses.map((dose) => `<article class="data-card"><strong>${escapeHtml(medicationLabel(dose))}</strong><p>Scheduled for ${escapeHtml(displayDateTime(dose.scheduled_at))}.</p><div class="actions"><button data-reminder-taken="${dose.id}" data-medication-id="${dose.medication_id}" data-scheduled-at="${dose.scheduled_at}">Mark as Taken</button><button class="secondary" data-reminder-snooze="${dose.id}">Snooze 10 minutes</button></div></article>`).join("")}</section>` : ""}
-      <section class="card"><h2>Add medication</h2><form id="medication-form"><div class="data-grid">
-        <label>Medicine name <input required name="name" maxlength="255"></label>
-        <label>Dosage <input name="dosage" maxlength="100" placeholder="e.g. 500"></label>
-        <label>Unit <input name="dosage_unit" maxlength="30" placeholder="e.g. mg"></label>
-        <label>Dose times <input required name="dose_times" placeholder="08:00, 20:00" pattern="^([01]\\d|2[0-3]):[0-5]\\d(,\\s*([01]\\d|2[0-3]):[0-5]\\d)*$"></label>
-        <label>Start date <input required type="date" name="start_date" value="${new Date().toISOString().slice(0, 10)}"></label>
-        <label>End date <input type="date" name="end_date"></label>
-      </div><label>Instructions <textarea name="instructions" rows="2" maxlength="2000"></textarea></label><label>Notes <textarea name="notes" rows="2" maxlength="2000"></textarea></label><button>Add medication</button><p id="medication-message" class="message" role="alert"></p></form></section>
-      <section class="card"><h2>Today's medications</h2>${medications.length ? medications.map((medication) => `<article class="data-card"><h3>${escapeHtml(medicationLabel(medication))}</h3><p>${escapeHtml(medication.frequency)} at ${escapeHtml(medication.dose_times.join(", "))}</p><p>Adherence: <strong>${medication.adherence.percentage ?? "—"}${medication.adherence.percentage === null ? "" : "%"}</strong> (${medication.adherence.taken_doses}/${medication.adherence.eligible_doses} eligible doses taken)</p>${medication.today_doses.length ? medication.today_doses.map((dose) => `<p><strong>${escapeHtml(displayDateTime(dose.scheduled_at))}</strong> — ${escapeHtml(dose.status)} ${dose.status === "scheduled" ? `<button data-dose-action="taken" data-medication-id="${medication.id}" data-scheduled-at="${dose.scheduled_at}">Taken</button> <button class="secondary" data-dose-action="skipped" data-medication-id="${medication.id}" data-scheduled-at="${dose.scheduled_at}">Skipped</button>` : ""}</p>`).join("") : "<p class=\"muted\">No doses scheduled today.</p>"}</article>`).join("") : "<p>No medications yet. Add one above to begin tracking.</p>"}</section>
-      <section class="card"><h2>Upcoming doses</h2>${analytics.upcoming_doses.length ? `<ul>${analytics.upcoming_doses.map((dose) => `<li>${escapeHtml(medicationLabel(dose))} — ${escapeHtml(displayDateTime(dose.scheduled_at))}</li>`).join("")}</ul>` : "<p>No upcoming doses in the current schedule window.</p>"}</section>
-      <section class="card"><h2>Recent missed doses</h2>${analytics.recent_missed_doses.length ? `<ul>${analytics.recent_missed_doses.map((dose) => `<li>${escapeHtml(medicationLabel(dose))} — ${escapeHtml(displayDateTime(dose.scheduled_at))}</li>`).join("")}</ul>` : "<p>No missed doses recorded.</p>"}</section>
-      ${renderTrackingSections(followUps, medicalTests, followUpFilters, medicalTestFilters, metrics)}`;
-    document.querySelector("#logout").onclick = () => { localStorage.removeItem(tokenKey); renderAuth(); };
-    document.querySelector("#medication-form").onsubmit = async (event) => {
-      event.preventDefault();
-      const form = new FormData(event.currentTarget);
-      const message = document.querySelector("#medication-message");
-      const doseTimes = String(form.get("dose_times")).split(",").map((time) => time.trim()).filter(Boolean);
-      try {
-        await request("/api/medications", { method: "POST", body: JSON.stringify({
-          name: form.get("name"), dosage: form.get("dosage") || null, dosage_unit: form.get("dosage_unit") || null,
-          dose_times: doseTimes, start_date: form.get("start_date"), end_date: form.get("end_date") || null,
-          instructions: form.get("instructions") || null, notes: form.get("notes") || null,
-        }) });
-        renderMedicationDashboard();
-      } catch (error) { message.textContent = error.message; }
+    const defaultSummary = {
+      medication: { totalMedications: 0, todayMedications: 0, scheduledDoses: 0, completedDoses: 0, missedDoses: 0, adherencePercentage: 0 },
+      nextMedication: null,
+      nextFollowUp: null,
+      nextMedicalTest: null,
+      pendingRecoveryTasks: 0,
     };
+    const summary = buildCareManagementSummary({
+      medications: (await request("/api/medications")).medications || [],
+      followUps: (await request(`/api/follow-ups${trackerQuery(followUpFilters)}`)).follow_ups || [],
+      medicalTests: (await request(`/api/medical-tests${trackerQuery(medicalTestFilters)}`)).medical_tests || [],
+    });
+    const summaryState = summary || defaultSummary;
+    main.innerHTML = `
+      <header class="topbar"><h1>Care management dashboard</h1><button id="logout">Sign out</button></header>
+      <section class="card disclaimer"><strong>Care summary</strong><p>Medication adherence ${summaryState.medication.adherencePercentage ?? 0}% • Next medication ${summaryState.nextMedication ? escapeHtml(medicationLabel(summaryState.nextMedication)) : "Not scheduled"} • Next follow-up ${summaryState.nextFollowUp ? escapeHtml(summaryState.nextFollowUp.title) : "Not scheduled"} • Pending recovery tasks ${summaryState.pendingRecoveryTasks}</p></section>
+      <section class="card"><h2>Unified care overview</h2><div class="data-grid">${medicationMetricCard("Medication adherence", `${summaryState.medication.adherencePercentage}%`, "Completed divided by scheduled doses")}${medicationMetricCard("Next medication", summaryState.nextMedication ? escapeHtml(medicationLabel(summaryState.nextMedication)) : "Not scheduled", "Next dose in the active schedule")}${medicationMetricCard("Next follow-up", summaryState.nextFollowUp ? escapeHtml(summaryState.nextFollowUp.title) : "No upcoming follow-up", "Next active follow-up")}${medicationMetricCard("Next medical test", summaryState.nextMedicalTest ? escapeHtml(summaryState.nextMedicalTest.test_name) : "No upcoming test", "Next pending or scheduled test")}${medicationMetricCard("Pending recovery tasks", String(summaryState.pendingRecoveryTasks), "Open tasks requiring attention")}</div></section>
+      <section class="card"><h2>Reminders</h2><p class="muted">This page checks due doses while it is open. Browser notifications require your permission and may be blocked by your browser or device.</p><div class="actions"><button class="secondary" id="enable-reminders" ${reminderPermission === "granted" || reminderPermission === "unsupported" ? "disabled" : ""}>${reminderPermission === "granted" ? "Notifications enabled" : reminderPermission === "unsupported" ? "Notifications unavailable" : "Enable browser notifications"}</button><button class="secondary" id="enable-reminder-sound">${soundEnabled ? "Reminder sound enabled" : "Enable Reminder Sound"}</button><button class="secondary" id="test-reminder-sound">Test Reminder Sound</button><button class="secondary" id="mute-reminders">Mute reminders for this page</button></div><p id="reminder-message" class="message" role="status"></p></section>
+      ${medicationHtml}
+      ${followUpHtml}
+      ${testHtml}
+      ${recoveryHtml}
+      ${renderTrackingSections((await request(`/api/follow-ups${trackerQuery(followUpFilters)}`)).follow_ups || [], (await request(`/api/medical-tests${trackerQuery(medicalTestFilters)}`)).medical_tests || [], followUpFilters, medicalTestFilters, dashboardMetrics((await request(`/api/follow-ups${trackerQuery(followUpFilters)}`)).follow_ups || [], (await request(`/api/medical-tests${trackerQuery(medicalTestFilters)}`)).medical_tests || []))}
+    `;
+
+    document.querySelector("#logout").onclick = () => { localStorage.removeItem(tokenKey); renderAuth(); };
+    document.querySelectorAll("[data-retry-section]").forEach((button) => button.onclick = () => renderMedicationDashboard());
+
     document.querySelectorAll("[data-dose-action]").forEach((button) => button.onclick = async () => {
       try {
         await request(`/api/medications/${button.dataset.medicationId}/${button.dataset.doseAction}`, { method: "POST", body: JSON.stringify({ scheduled_at: button.dataset.scheduledAt }) });
         renderMedicationDashboard();
       } catch (error) { window.alert(error.message); }
     });
-    document.querySelector("#followup-form").onsubmit = async (event) => {
-      event.preventDefault();
-      const form = new FormData(event.currentTarget);
-      const message = document.querySelector("#followup-message");
-      try {
-        await request("/api/follow-ups", { method: "POST", body: JSON.stringify({
-          title: form.get("title"),
-          description: form.get("description") || null,
-          provider_or_specialist: form.get("provider_or_specialist") || null,
-          appointment_date: form.get("appointment_date") || null,
-          appointment_time: form.get("appointment_time") || null,
-          due_date: form.get("due_date") || null,
-          status: form.get("status"),
-        }) });
-        renderMedicationDashboard();
-      } catch (error) { message.textContent = error.message; }
-    };
-    document.querySelector("#test-form").onsubmit = async (event) => {
-      event.preventDefault();
-      const form = new FormData(event.currentTarget);
-      const message = document.querySelector("#test-message");
-      try {
-        await request("/api/medical-tests", { method: "POST", body: JSON.stringify({
-          test_name: form.get("test_name"),
-          instructions: form.get("instructions") || null,
-          scheduled_date: form.get("scheduled_date") || null,
-          status: form.get("status"),
-        }) });
-        renderMedicationDashboard();
-      } catch (error) { message.textContent = error.message; }
-    };
-    const trackerAction = async (action, path, confirmText) => {
-      if (confirmText && !window.confirm(confirmText)) return;
-      try { await request(path, action); renderMedicationDashboard(); }
-      catch (error) { window.alert(error.message); }
-    };
-    document.querySelectorAll("[data-followup-complete]").forEach((button) => button.onclick = () =>
-      trackerAction({ method: "POST" }, `/api/follow-ups/${button.dataset.followupComplete}/complete`));
-    document.querySelectorAll("[data-followup-status]").forEach((button) => button.onclick = () =>
-      trackerAction({ method: "PATCH", body: JSON.stringify({ status: button.dataset.value }) }, `/api/follow-ups/${button.dataset.followupStatus}`));
-    document.querySelectorAll("[data-followup-delete]").forEach((button) => button.onclick = () =>
-      trackerAction({ method: "DELETE" }, `/api/follow-ups/${button.dataset.followupDelete}`, "Delete this follow-up? This cannot be undone."));
-    document.querySelectorAll("[data-test-complete]").forEach((button) => button.onclick = () =>
-      trackerAction({ method: "POST", body: "{}" }, `/api/medical-tests/${button.dataset.testComplete}/complete`));
-    document.querySelectorAll("[data-test-status]").forEach((button) => button.onclick = () =>
-      trackerAction({ method: "PATCH", body: JSON.stringify({ status: button.dataset.value }) }, `/api/medical-tests/${button.dataset.testStatus}`));
-    document.querySelectorAll("[data-test-delete]").forEach((button) => button.onclick = () =>
-      trackerAction({ method: "DELETE" }, `/api/medical-tests/${button.dataset.testDelete}`, "Delete this medical test? This cannot be undone."));
+
     document.querySelectorAll("[data-filter-apply]").forEach((button) => button.onclick = () => {
       const kind = button.dataset.filterApply;
       const target = kind === "follow_up" ? followUpFilters : medicalTestFilters;
@@ -360,6 +401,7 @@ const renderMedicationDashboard = async () => {
       });
       renderMedicationDashboard();
     });
+
     document.querySelector("#enable-reminders").onclick = async () => {
       const message = document.querySelector("#reminder-message");
       if (!("Notification" in window) || !shouldRequestNotificationPermission(Notification.permission)) return;
@@ -382,38 +424,22 @@ const renderMedicationDashboard = async () => {
       } catch { message.textContent = "Reminder sound could not be played."; }
     };
     document.querySelector("#mute-reminders").onclick = () => { reminderMuted = true; document.querySelector("#reminder-message").textContent = "Reminders muted until this dashboard is reloaded."; };
-    document.querySelectorAll("[data-reminder-snooze]").forEach((button) => button.onclick = () => {
-      snoozedUntilByDoseId.set(button.dataset.reminderSnooze, Date.now() + 10 * 60_000);
-      document.querySelector("#reminder-message").textContent = "Reminder snoozed for 10 minutes. The dose remains scheduled.";
-      renderMedicationDashboard();
-    });
-    document.querySelectorAll("[data-reminder-taken]").forEach((button) => button.onclick = async () => {
-      try {
-        await request(`/api/medications/${button.dataset.medicationId}/taken`, { method: "POST", body: JSON.stringify({ scheduled_at: button.dataset.scheduledAt }) });
-        snoozedUntilByDoseId.delete(button.dataset.reminderTaken);
-        renderMedicationDashboard();
-      } catch (error) { window.alert(error.message); }
-    });
-    const notifyDueDoses = () => {
-      if (reminderMuted) return;
-      const due = findDueDoses({
-        dueDoses: analytics.due_doses || [],
-        upcomingDoses: analytics.upcoming_doses || [],
-        snoozedUntilById: snoozedUntilByDoseId,
-      });
+
+    const medicationNotification = async () => {
+      const medResult = await request("/api/medications");
+      const analytics = medResult.analytics || {};
+      const due = findDueDoses({ dueDoses: analytics.due_doses || [], upcomingDoses: analytics.upcoming_doses || [], snoozedUntilById: snoozedUntilByDoseId });
       if ("Notification" in window && Notification.permission === "granted") {
-        claimUndeliveredDoses(due, notifiedDoseIds).forEach((dose) => {
-          new Notification("CareBridge medication reminder", { body: `${medicationLabel(dose)} is due now.` });
-        });
+        claimUndeliveredDoses(due, notifiedDoseIds).forEach((dose) => new Notification("CareBridge medication reminder", { body: `${medicationLabel(dose)} is due now.` }));
       }
       if (shouldPlayReminderSound(readReminderSoundPreference(window.localStorage), reminderAudioContext?.state === "running")) {
         claimUndeliveredDoses(due, soundedDoseIds).forEach(() => playReminderSound());
       }
     };
-    notifyDueDoses();
-    medicationReminderTimer = window.setInterval(notifyDueDoses, 60_000);
+    medicationNotification();
+    medicationReminderTimer = window.setInterval(medicationNotification, 60_000);
   } catch (error) {
-    main.innerHTML = `<section class="card"><h1>Unable to load medications</h1><p class="message">${escapeHtml(error.message)}</p><button id="retry">Try again</button></section>`;
+    main.innerHTML = `<section class="card"><h1>Unable to load care management dashboard</h1><p class="message">${escapeHtml(error.message)}</p><button id="retry">Try again</button></section>`;
     document.querySelector("#retry").onclick = renderMedicationDashboard;
   }
 };
