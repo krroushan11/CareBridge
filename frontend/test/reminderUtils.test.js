@@ -5,6 +5,7 @@ import {
   findDueDoses,
   readReminderSoundPreference,
   shouldPlayReminderSound,
+  shouldPollReminders,
   shouldRequestNotificationPermission,
   writeReminderSoundPreference,
 } from "../src/reminderUtils.js";
@@ -40,4 +41,9 @@ test("notification permission is requested only from the default permission stat
   assert.equal(shouldRequestNotificationPermission("default"), true);
   assert.equal(shouldRequestNotificationPermission("granted"), false);
   assert.equal(shouldRequestNotificationPermission("denied"), false);
+});
+
+test("muted reminders are not eligible for polling side effects", () => {
+  assert.equal(shouldPollReminders(false), true);
+  assert.equal(shouldPollReminders(true), false);
 });

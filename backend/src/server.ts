@@ -12,6 +12,8 @@ import medicationRoutes from "./routes/medicationRoutes";
 import reminderRoutes from "./routes/reminderRoutes";
 import { validateJwtSecret } from "./middlewares/authMiddleware";
 import { startDocumentProcessingWorker } from "./services/documentProcessingQueue";
+import notificationRoutes from "./routes/notificationRoutes";
+import { startReminderScheduler } from "./services/reminderEngine";
 
 dotenv.config();
 
@@ -36,8 +38,10 @@ app.use("/api/medications", medicationRoutes);
 app.use("/api/follow-ups", followUpRoutes);
 app.use("/api/medical-tests", medicalTestRoutes);
 app.use("/api/reminders", reminderRoutes);
+app.use("/api/notifications", notificationRoutes);
 
 startDocumentProcessingWorker();
+startReminderScheduler();
 
 const PORT = process.env.PORT || 5000;
 

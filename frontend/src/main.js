@@ -3,6 +3,7 @@ import {
   findDueDoses,
   readReminderSoundPreference,
   shouldPlayReminderSound,
+  shouldPollReminders,
   shouldRequestNotificationPermission,
   writeReminderSoundPreference,
 } from "./reminderUtils.js";
@@ -28,6 +29,31 @@ const role = () => {
   try { return JSON.parse(atob(token().split(".")[1])).role; } catch { return null; }
 };
 
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/service-worker.js").catch(() => {
+    // Push is optional; the application remains usable when registration fails.
+  });
+}
+
+const registerPushSubscription = async () => {
+  const publicKey = import.meta.env.VITE_VAPID_PUBLIC_KEY;
+  if (!publicKey || !("serviceWorker" in navigator) || !("PushManager" in window)) return null;
+  if (!("Notification" in window) || Notification.permission !== "granted") return null;
+  const paddedKey = `${publicKey}${"=".repeat((4 - (publicKey.length % 4)) % 4)}`.replaceAll("-", "+").replaceAll("_", "/");
+  const binaryKey = atob(paddedKey);
+  const applicationServerKey = Uint8Array.from(binaryKey, (character) => character.charCodeAt(0));
+  const registration = await navigator.serviceWorker.ready;
+  const subscription = await registration.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey,
+  });
+  const response = await request("/api/notifications/push-subscriptions", {
+    method: "POST",
+    body: JSON.stringify(subscription.toJSON()),
+  });
+  return response.subscription;
+};
+
 const request = async (path, options = {}) => {
   const response = await fetch(`${apiBaseUrl}${path}`, {
     ...options,
@@ -50,6 +76,7 @@ const formatJson = (value) => JSON.stringify(value ?? [], null, 2);
 const fields = ["medications", "findings", "tests", "follow_up", "warnings", "uncertainty_notes"];
 let currentExtraction;
 let medicationReminderTimer;
+let reminderPollGeneration = 0;
 let followUpFilters = { status: "", from: "", to: "" };
 let medicalTestFilters = { status: "", from: "", to: "" };
 const TERMINAL_SET = new Set(["completed", "cancelled"]);
@@ -90,6 +117,18 @@ const playReminderSound = () => {
   return true;
 };
 
+const clearMedicationReminderTimer = () => {
+  if (medicationReminderTimer) window.clearInterval(medicationReminderTimer);
+  medicationReminderTimer = undefined;
+  reminderPollGeneration += 1;
+};
+
+const logout = () => {
+  clearMedicationReminderTimer();
+  localStorage.removeItem(tokenKey);
+  renderAuth();
+};
+
 const renderAuth = () => {
   main.innerHTML = `
     <section class="card auth-card">
@@ -126,7 +165,7 @@ const renderClinicianDashboard = async () => {
     main.innerHTML = `<header class="topbar"><h1>Clinician review queue</h1><button id="logout">Sign out</button></header>
       <section class="card"><p class="disclaimer">Review the source-derived information carefully. Approval is a clinician workflow action, not an automatic diagnosis.</p>
       ${result.reviews.length ? result.reviews.map((review) => `<article class="data-card review-item"><h2>${escapeHtml(review.original_filename)}</h2><p>Status: <strong>${escapeHtml(review.status)}</strong></p><pre>${escapeHtml(JSON.stringify(review.verified_extraction, null, 2))}</pre><textarea data-note="${review.id}" rows="2" placeholder="Optional review note"></textarea><div class="actions"><button data-review="${review.id}" data-status="approved">Approve</button><button class="secondary" data-review="${review.id}" data-status="changes_requested">Request changes</button><button class="secondary" data-review="${review.id}" data-status="rejected">Reject</button></div></article>`).join("") : "<p>No assigned reviews.</p>"}</section>`;
-    document.querySelector("#logout").onclick = () => { localStorage.removeItem(tokenKey); renderAuth(); };
+    document.querySelector("#logout").onclick = logout;
     document.querySelectorAll("[data-review]").forEach((button) => button.onclick = async () => {
       const id = button.dataset.review;
       const note = document.querySelector(`[data-note="${id}"]`).value;
@@ -256,11 +295,20 @@ const medicationMetricCard = (title, value, subtext = "") => `
   </article>`;
 
 const renderMedicationDashboard = async () => {
+  clearMedicationReminderTimer();
   main.innerHTML = `<section class="card loading" aria-live="polite">Loading care management dashboard…</section>`;
+  const requestCache = new Map();
+  const cachedRequest = (path) => {
+    if (!requestCache.has(path)) requestCache.set(path, request(path));
+    return requestCache.get(path);
+  };
+  const medicationsPath = "/api/medications";
+  const followUpsPath = () => `/api/follow-ups${trackerQuery(followUpFilters)}`;
+  const medicalTestsPath = () => `/api/medical-tests${trackerQuery(medicalTestFilters)}`;
 
   const medicationSection = async () => {
     try {
-      const result = await request("/api/medications");
+      const result = await cachedRequest(medicationsPath);
       const { medications = [], analytics = {} } = result;
       const adherence = analytics.adherence_percentage ?? (medications.length ? medications.reduce((sum, medication) => sum + (medication.adherence?.percentage ?? 0), 0) / medications.length : 0);
       const schedule = buildMedicationSchedule(medications, analytics);
@@ -299,7 +347,7 @@ const renderMedicationDashboard = async () => {
 
   const followUpSection = async () => {
     try {
-      const result = await request(`/api/follow-ups${trackerQuery(followUpFilters)}`);
+      const result = await cachedRequest(followUpsPath());
       const followUps = result.follow_ups || [];
       const summary = followUps.slice(0, 5);
       return `
@@ -315,7 +363,7 @@ const renderMedicationDashboard = async () => {
 
   const medicalTestSection = async () => {
     try {
-      const result = await request(`/api/medical-tests${trackerQuery(medicalTestFilters)}`);
+      const result = await cachedRequest(medicalTestsPath());
       const medicalTests = result.medical_tests || [];
       const summary = medicalTests.slice(0, 5);
       return `
@@ -332,8 +380,8 @@ const renderMedicationDashboard = async () => {
   const recoverySection = async () => {
     try {
       const [followUpResult, testResult] = await Promise.all([
-        request(`/api/follow-ups${trackerQuery(followUpFilters)}`),
-        request(`/api/medical-tests${trackerQuery(medicalTestFilters)}`),
+        cachedRequest(followUpsPath()),
+        cachedRequest(medicalTestsPath()),
       ]);
       const tasks = [...(followUpResult.follow_ups || []), ...(testResult.medical_tests || [])]
         .filter((item) => !["completed", "cancelled"].includes(item.status))
@@ -366,9 +414,9 @@ const renderMedicationDashboard = async () => {
       pendingRecoveryTasks: 0,
     };
     const summary = buildCareManagementSummary({
-      medications: (await request("/api/medications")).medications || [],
-      followUps: (await request(`/api/follow-ups${trackerQuery(followUpFilters)}`)).follow_ups || [],
-      medicalTests: (await request(`/api/medical-tests${trackerQuery(medicalTestFilters)}`)).medical_tests || [],
+      medications: (await cachedRequest(medicationsPath)).medications || [],
+      followUps: (await cachedRequest(followUpsPath())).follow_ups || [],
+      medicalTests: (await cachedRequest(medicalTestsPath())).medical_tests || [],
     });
     const summaryState = summary || defaultSummary;
     main.innerHTML = `
@@ -380,10 +428,19 @@ const renderMedicationDashboard = async () => {
       ${followUpHtml}
       ${testHtml}
       ${recoveryHtml}
-      ${renderTrackingSections((await request(`/api/follow-ups${trackerQuery(followUpFilters)}`)).follow_ups || [], (await request(`/api/medical-tests${trackerQuery(medicalTestFilters)}`)).medical_tests || [], followUpFilters, medicalTestFilters, dashboardMetrics((await request(`/api/follow-ups${trackerQuery(followUpFilters)}`)).follow_ups || [], (await request(`/api/medical-tests${trackerQuery(medicalTestFilters)}`)).medical_tests || []))}
+      ${renderTrackingSections(
+        (await cachedRequest(followUpsPath())).follow_ups || [],
+        (await cachedRequest(medicalTestsPath())).medical_tests || [],
+        followUpFilters,
+        medicalTestFilters,
+        dashboardMetrics(
+          (await cachedRequest(followUpsPath())).follow_ups || [],
+          (await cachedRequest(medicalTestsPath())).medical_tests || [],
+        ),
+      )}
     `;
 
-    document.querySelector("#logout").onclick = () => { localStorage.removeItem(tokenKey); renderAuth(); };
+    document.querySelector("#logout").onclick = logout;
     document.querySelectorAll("[data-retry-section]").forEach((button) => button.onclick = () => renderMedicationDashboard());
 
     document.querySelectorAll("[data-dose-action]").forEach((button) => button.onclick = async () => {
@@ -406,7 +463,16 @@ const renderMedicationDashboard = async () => {
       const message = document.querySelector("#reminder-message");
       if (!("Notification" in window) || !shouldRequestNotificationPermission(Notification.permission)) return;
       const permission = await Notification.requestPermission();
-      message.textContent = permission === "granted" ? "Browser notifications enabled while this page is open." : "Browser notification permission was not granted.";
+      if (permission !== "granted") {
+        message.textContent = "Browser notification permission was not granted.";
+        return;
+      }
+      try {
+        await registerPushSubscription();
+        message.textContent = "Browser notifications enabled while this page is open.";
+      } catch (error) {
+        message.textContent = `Browser notifications enabled for this page, but push setup failed: ${error.message || "configuration unavailable"}`;
+      }
     };
     document.querySelector("#enable-reminder-sound").onclick = async () => {
       const message = document.querySelector("#reminder-message");
@@ -425,8 +491,12 @@ const renderMedicationDashboard = async () => {
     };
     document.querySelector("#mute-reminders").onclick = () => { reminderMuted = true; document.querySelector("#reminder-message").textContent = "Reminders muted until this dashboard is reloaded."; };
 
+    const pollGeneration = reminderPollGeneration;
     const medicationNotification = async () => {
-      const medResult = await request("/api/medications");
+      if (!shouldPollReminders(reminderMuted) || pollGeneration !== reminderPollGeneration || !token()) return;
+      try {
+        const medResult = await request(medicationsPath);
+        if (!shouldPollReminders(reminderMuted) || pollGeneration !== reminderPollGeneration || !token()) return;
       const analytics = medResult.analytics || {};
       const due = findDueDoses({ dueDoses: analytics.due_doses || [], upcomingDoses: analytics.upcoming_doses || [], snoozedUntilById: snoozedUntilByDoseId });
       if ("Notification" in window && Notification.permission === "granted") {
@@ -435,10 +505,17 @@ const renderMedicationDashboard = async () => {
       if (shouldPlayReminderSound(readReminderSoundPreference(window.localStorage), reminderAudioContext?.state === "running")) {
         claimUndeliveredDoses(due, soundedDoseIds).forEach(() => playReminderSound());
       }
+      } catch (error) {
+        const message = document.querySelector("#reminder-message");
+        if (message && shouldPollReminders(reminderMuted) && pollGeneration === reminderPollGeneration) {
+          message.textContent = `Reminder polling failed: ${error.message || "Unable to check medication reminders."}`;
+        }
+      }
     };
     medicationNotification();
     medicationReminderTimer = window.setInterval(medicationNotification, 60_000);
   } catch (error) {
+    clearMedicationReminderTimer();
     main.innerHTML = `<section class="card"><h1>Unable to load care management dashboard</h1><p class="message">${escapeHtml(error.message)}</p><button id="retry">Try again</button></section>`;
     document.querySelector("#retry").onclick = renderMedicationDashboard;
   }
@@ -463,7 +540,7 @@ const extractionCards = (extraction) => fields.map((field) => {
 }).join("") + `<section class="data-card"><h3>patient summary</h3><p>${escapeHtml(extraction?.patient_summary)}</p></section>`;
 
 const renderApp = async () => {
-  if (medicationReminderTimer) window.clearInterval(medicationReminderTimer);
+  clearMedicationReminderTimer();
   if (!token()) return renderAuth();
   if (!documentId()) {
     if (role() === "doctor") return renderClinicianDashboard();
@@ -518,7 +595,7 @@ const readEditedExtraction = () => {
 };
 
 const bindReviewHandlers = (review) => {
-  document.querySelector("#logout").onclick = () => { localStorage.removeItem(tokenKey); renderAuth(); };
+  document.querySelector("#logout").onclick = logout;
   document.querySelector("#medications").onclick = () => { window.history.replaceState({}, "", window.location.pathname); renderApp(); };
   document.querySelector("#revert").onclick = () => { currentExtraction = review.extraction; renderApp(); };
   document.querySelector("#edit-form").onsubmit = async (event) => {

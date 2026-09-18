@@ -33,3 +33,17 @@ export const sendOTPEmail = async (email: string, otp: string) => {
     `,
   });
 };
+
+/** Returns false when email is deliberately unavailable; callers can persist a safe skipped state. */
+export const sendReminderEmail = async (email: string, subject: string, body: string): Promise<boolean> => {
+  if (process.env.EMAIL_REMINDERS_ENABLED !== "true" || !process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+    return false;
+  }
+  await transporter.sendMail({
+    from: `"CareBridge AI" <${process.env.EMAIL_USER}>`,
+    to: email,
+    subject,
+    text: body,
+  });
+  return true;
+};

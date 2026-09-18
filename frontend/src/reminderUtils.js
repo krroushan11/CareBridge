@@ -31,3 +31,5 @@ export const claimUndeliveredDoses = (doses, deliveredDoseIds) => doses.filter((
 });
 
 export const shouldPlayReminderSound = (soundEnabled, audioUnlocked) => soundEnabled && audioUnlocked;
+
+export const shouldPollReminders = (reminderMuted) => !reminderMuted;
