@@ -1,8 +1,16 @@
 export type LlmProvider = {
   extract: (normalizedText: string) => Promise<unknown>;
+  embed: (input: string, taskType?: "RETRIEVAL_DOCUMENT" | "RETRIEVAL_QUERY") => Promise<number[]>;
+  chat: (system: string, user: string) => Promise<string>;
 };
 
 export class LlmInvalidResponseError extends Error {}
+
+export const getConfiguredEmbeddingModel = () =>
+  process.env.AI_EMBEDDING_MODEL ||
+  (process.env.AI_BASE_URL?.includes("generativelanguage.googleapis.com")
+    ? "gemini-embedding-001"
+    : "text-embedding-3-small");
 
 const extractionInstruction = [
   "Extract only facts explicitly supported by the supplied medical document text.",
@@ -45,6 +53,33 @@ class OpenAiCompatibleProvider implements LlmProvider {
     private readonly model: string
   ) {}
 
+  private isGeminiEndpoint() {
+    return this.baseUrl.includes("generativelanguage.googleapis.com");
+  }
+
+  private getGeminiEmbeddingUrl(model: string) {
+    const baseUrl = this.baseUrl.replace(/\/openai\/?$/, "/");
+    const modelName = model.replace(/^models\//, "");
+    return `${baseUrl}models/${modelName}:embedContent`;
+  }
+
+  private async throwProviderError(response: Response, operation: string, model: string): Promise<never> {
+    let providerMessage = response.statusText || "unknown provider error";
+    try {
+      const payload = await response.json() as { error?: { message?: string } };
+      if (payload.error?.message) providerMessage = payload.error.message;
+    } catch {
+      // Some providers return an empty or non-JSON error body.
+    }
+    console.error(`${operation} provider error`, {
+      provider: this.isGeminiEndpoint() ? "gemini" : "openai-compatible",
+      status: response.status,
+      model,
+      message: providerMessage,
+    });
+    throw new Error(`${operation} provider request failed: HTTP ${response.status}`);
+  }
+
   async extract(normalizedText: string): Promise<unknown> {
     const response = await fetch(`${this.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
       method: "POST",
@@ -69,25 +104,83 @@ class OpenAiCompatibleProvider implements LlmProvider {
         ],
       }),
     });
-
-    if (!response.ok) {
-      throw new Error("LLM provider request failed");
-    }
+    if (!response.ok) await this.throwProviderError(response, "LLM", this.model);
 
     const payload = await response.json() as {
       choices?: Array<{ message?: { content?: string | null } }>;
     };
     const content = payload.choices?.[0]?.message?.content;
-
     if (typeof content !== "string" || !content.trim()) {
       throw new LlmInvalidResponseError("LLM provider returned no structured content");
     }
-
     try {
       return JSON.parse(content);
     } catch {
       throw new LlmInvalidResponseError("LLM provider returned malformed JSON");
     }
+  }
+
+  async embed(
+    input: string,
+    taskType: "RETRIEVAL_DOCUMENT" | "RETRIEVAL_QUERY" = "RETRIEVAL_QUERY"
+  ): Promise<number[]> {
+    const model = getConfiguredEmbeddingModel();
+    const response = this.isGeminiEndpoint()
+      ? await fetch(this.getGeminiEmbeddingUrl(model), {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-goog-api-key": this.apiKey },
+          body: JSON.stringify({
+            content: { parts: [{ text: input }] },
+            taskType,
+            outputDimensionality: 1536,
+          }),
+        })
+      : await fetch(`${this.baseUrl.replace(/\/+$/, "")}/embeddings`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${this.apiKey}`,
+          },
+          body: JSON.stringify({ model, input }),
+        });
+    if (!response.ok) await this.throwProviderError(response, "Embedding", model);
+
+    const payload = await response.json() as {
+      data?: Array<{ embedding?: number[] }>;
+      embedding?: { values?: number[] };
+    };
+    const embedding = this.isGeminiEndpoint()
+      ? payload.embedding?.values
+      : payload.data?.[0]?.embedding;
+    if (!Array.isArray(embedding) || embedding.length !== 1536 ||
+        embedding.some((value) => typeof value !== "number" || !Number.isFinite(value))) {
+      throw new LlmInvalidResponseError("Embedding provider returned an invalid 1536-dimensional vector");
+    }
+    return embedding;
+  }
+
+  async chat(system: string, user: string): Promise<string> {
+    const response = await fetch(`${this.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: this.model,
+        temperature: 0,
+        messages: [{ role: "system", content: system }, { role: "user", content: user }],
+      }),
+    });
+    if (!response.ok) await this.throwProviderError(response, "Chat", this.model);
+    const payload = await response.json() as {
+      choices?: Array<{ message?: { content?: string | null } }>;
+    };
+    const content = payload.choices?.[0]?.message?.content;
+    if (typeof content !== "string" || !content.trim()) {
+      throw new LlmInvalidResponseError("Chat provider returned no content");
+    }
+    return content.trim();
   }
 }
 
@@ -99,6 +192,12 @@ export const createConfiguredLlmProvider = (): LlmProvider => {
   if (!apiKey) {
     return {
       async extract() {
+        throw new Error("AI_API_KEY is not configured");
+      },
+      async embed() {
+        throw new Error("AI_API_KEY is not configured");
+      },
+      async chat() {
         throw new Error("AI_API_KEY is not configured");
       },
     };

@@ -1,3 +1,24 @@
+# Phase 15 — Verified-Context Care Chat
+
+Phase 15 adds an additive pgvector-backed care chat flow. It deterministically
+chunks only verified care-plan data, embeds those chunks through the existing
+OpenAI-compatible AI configuration, retrieves patient-authorized context, and
+persists chat history with citations.
+
+Apply
+`backend/database/migrations/20260923_phase15_chat_pgvector.sql` after the
+Phase 14 migration; do not reset the database. The migration requires the
+PostgreSQL `vector` extension. Configure `AI_API_KEY`, `AI_BASE_URL`,
+`AI_MODEL`, and optionally `AI_EMBEDDING_MODEL` (default
+`text-embedding-3-small`). Patients can use `POST /api/chat`; caregivers need
+an accepted Phase 14 relationship with `view_care_plan`.
+
+The assistant is safety-restricted: it does not diagnose, prescribe, change
+medications, or answer beyond verified context, and it returns emergency
+guidance for urgent indicators. See
+[docs/PHASE15_README.md](docs/PHASE15_README.md) for the migration, APIs,
+testing, and provider limitations.
+
 # Phase 14 — Family & Caregiver Coordination
 
 Phase 14 adds patient-scoped caregiver invitations, explicit least-privilege

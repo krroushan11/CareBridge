@@ -9,6 +9,7 @@
     "test:reminders": "node --test test/reminderUtils.test.js",
     "test:trackers": "node --test test/trackerUtils.test.js",
     "test:caregivers": "node --test test/caregiverUtils.test.js",
+    "test:chat": "node --test test/chatUtils.test.js",
     "preview": "vite preview --host 0.0.0.0"
   },
   "devDependencies": {

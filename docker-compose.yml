@@ -21,6 +21,7 @@ services:
       - ./backend/database/migrations/20260920_phase11_follow_ups_tests.sql:/docker-entrypoint-initdb.d/010_phase11_follow_ups_tests.sql:ro
       - ./backend/database/migrations/20260921_phase13_notifications.sql:/docker-entrypoint-initdb.d/011_phase13_notifications.sql:ro
       - ./backend/database/migrations/20260922_phase14_caregiver_coordination.sql:/docker-entrypoint-initdb.d/012_phase14_caregiver_coordination.sql:ro
+      - ./backend/database/migrations/20260923_phase15_chat_pgvector.sql:/docker-entrypoint-initdb.d/013_phase15_chat_pgvector.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
@@ -44,6 +45,7 @@ services:
       AI_API_KEY: ${AI_API_KEY:-}
       AI_BASE_URL: ${AI_BASE_URL:-https://api.openai.com/v1}
       AI_MODEL: ${AI_MODEL:-gpt-4o-mini}
+      AI_EMBEDDING_MODEL: ${AI_EMBEDDING_MODEL:-text-embedding-3-small}
     ports:
       - "${BACKEND_PORT:-5000}:5000"
     depends_on:

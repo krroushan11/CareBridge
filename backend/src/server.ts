@@ -15,6 +15,7 @@ import { startDocumentProcessingWorker } from "./services/documentProcessingQueu
 import notificationRoutes from "./routes/notificationRoutes";
 import { startReminderScheduler } from "./services/reminderEngine";
 import caregiverRoutes from "./routes/caregiverRoutes";
+import chatRoutes from "./routes/chatRoutes";
 
 dotenv.config();
 
@@ -41,6 +42,7 @@ app.use("/api/medical-tests", medicalTestRoutes);
 app.use("/api/reminders", reminderRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/caregivers", caregiverRoutes);
+app.use("/api/chat", chatRoutes);
 
 startDocumentProcessingWorker();
 startReminderScheduler();

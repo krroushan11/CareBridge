@@ -24,6 +24,7 @@ import {
   statusBadgeClass,
 } from "./trackerUtils.js";
 import { CAREGIVER_PERMISSIONS, permissionChecked, relationshipLabel } from "./caregiverUtils.js";
+import { createChatSubmitHandler } from "./chatUtils.js";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000";
 const main = document.querySelector("main");
@@ -198,6 +199,21 @@ const renderPatientCaregiverSection = async () => {
   } catch (error) {
     return sectionCard("Family & caregiver access", `<p class="message">${escapeHtml(error.message || "Unable to load caregiver access")}</p>`);
   }
+};
+
+const renderChatSection = async () => {
+  let history = [];
+  try {
+    history = (await request("/api/chat/history")).conversations || [];
+  } catch {
+    // The chat card remains available and reports the request error on submit.
+  }
+  const messages = history.flatMap((conversation) => conversation.messages || []).slice(-8);
+  return `<section class="card"><h2>Verified care assistant</h2>
+    <p class="disclaimer">Answers use only your verified care information. This is not a diagnosis or a replacement for a clinician. For emergencies, contact local emergency services.</p>
+    <div class="data-card">${messages.length ? messages.map((item) => `<p><strong>${item.role === "user" ? "You" : "CareBridge"}:</strong> ${escapeHtml(item.content)}</p>`).join("") : "<p class=\"muted\">Ask a question about your verified care information.</p>"}</div>
+    <form id="chat-form"><label for="chat-question">Question <textarea id="chat-question" required name="message" form="chat-form" rows="3" maxlength="4000" placeholder="What does my verified care plan say about my follow-up?"></textarea></label><button type="submit" form="chat-form">Ask CareBridge</button><p id="chat-message" class="message" role="alert"></p></form>
+  </section>`;
 };
 
 const tokenUserId = () => {
@@ -469,12 +485,13 @@ const renderMedicationDashboard = async () => {
   };
 
   try {
-    const [medicationHtml, followUpHtml, testHtml, recoveryHtml, caregiverHtml] = await Promise.all([
+    const [medicationHtml, followUpHtml, testHtml, recoveryHtml, caregiverHtml, chatHtml] = await Promise.all([
       medicationSection(),
       followUpSection(),
       medicalTestSection(),
       recoverySection(),
       renderPatientCaregiverSection(),
+      renderChatSection(),
     ]);
     const reminderPermission = "Notification" in window ? Notification.permission : "unsupported";
     const soundEnabled = readReminderSoundPreference(window.localStorage);
@@ -501,6 +518,7 @@ const renderMedicationDashboard = async () => {
       ${testHtml}
       ${recoveryHtml}
       ${caregiverHtml}
+      ${chatHtml}
       ${renderTrackingSections(
         (await cachedRequest(followUpsPath())).follow_ups || [],
         (await cachedRequest(medicalTestsPath())).medical_tests || [],
@@ -514,6 +532,7 @@ const renderMedicationDashboard = async () => {
     `;
 
     document.querySelector("#logout").onclick = logout;
+    document.querySelector("#chat-form").onsubmit = createChatSubmitHandler({ request });
     const inviteForm = document.querySelector("#caregiver-invite-form");
     if (inviteForm) inviteForm.onsubmit = async (event) => {
       event.preventDefault();
