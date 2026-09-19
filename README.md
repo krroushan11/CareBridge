@@ -1,212 +1,347 @@
-# Phase 15 — Verified-Context Care Chat
-
-Phase 15 adds an additive pgvector-backed care chat flow. It deterministically
-chunks only verified care-plan data, embeds those chunks through the existing
-OpenAI-compatible AI configuration, retrieves patient-authorized context, and
-persists chat history with citations.
-
-Apply
-`backend/database/migrations/20260923_phase15_chat_pgvector.sql` after the
-Phase 14 migration; do not reset the database. The migration requires the
-PostgreSQL `vector` extension. Configure `AI_API_KEY`, `AI_BASE_URL`,
-`AI_MODEL`, and optionally `AI_EMBEDDING_MODEL` (default
-`text-embedding-3-small`). Patients can use `POST /api/chat`; caregivers need
-an accepted Phase 14 relationship with `view_care_plan`.
-
-The assistant is safety-restricted: it does not diagnose, prescribe, change
-medications, or answer beyond verified context, and it returns emergency
-guidance for urgent indicators. See
-[docs/PHASE15_README.md](docs/PHASE15_README.md) for the migration, APIs,
-testing, and provider limitations.
-
-# Phase 14 — Family & Caregiver Coordination
-
-Phase 14 adds patient-scoped caregiver invitations, explicit least-privilege
-permissions, shared verified care information, and server-side access
-revocation. The implementation, validation results, known limitations, and
-local-only Step 16 production-configuration verification status are documented
-in [docs/PHASE14_README.md](docs/PHASE14_README.md).
-
-# Phase 13 — Notifications & Reminders
+# CareBridge AI — PHASE 15
+## Verified Care Assistant — RAG
 
 ## Objective
 
-Phase 13 adds a centralized reminder and notification foundation for medication
-doses, follow-ups, and medical tests. It reuses the existing PostgreSQL records,
-owner-scoped authentication, tracker status rules, and email transport instead
-of creating duplicate care-data models.
+Phase 15 adds a safety-restricted, document-grounded chat assistant for
+CareBridge. The assistant answers questions only from care-plan information
+that has been explicitly verified by the patient. It does not invent medical
+facts or use raw, unverified document content as chat context.
 
-## Architecture
+## Verified Care Assistant
 
-The backend reminder engine is implemented in
-`backend/src/services/reminderEngine.ts`. It creates deduplicated notification
-records from:
+The patient dashboard includes a **Verified Care Assistant** card that:
 
-- `medication_doses` joined to active `medications`
-- active `follow_ups`
-- active `medical_tests`
+- Loads recent authenticated chat history.
+- Accepts questions about the patient's verified care information.
+- Sends questions to `POST /api/chat`.
+- Displays grounded answers and preserves the existing safety disclaimer.
+- Handles successful responses, errors, and consecutive questions safely.
 
-The engine runs as one interval scheduler started by
-`backend/src/server.ts`. It generates due/upcoming records, then processes
-eligible pending email deliveries. Failures are isolated per notification and
-persisted as delivery status rather than crashing the server.
+The frontend is not an authorization boundary. Patient and caregiver access,
+retrieval scope, grounding, and safety behavior are enforced by the backend.
 
-## Reminder categories
+## RAG architecture
 
-### Medicine reminders
+The Phase 15 flow is:
 
-Medication reminders use the existing dose schedule and include the medication
-name, scheduled timestamp, owner, and a generated reminder body. Scheduled
-doses are deduplicated by owner, source dose, and scheduled time.
+1. Read human-verified care-plan data for the authorized patient.
+2. Normalize and deterministically chunk the verified content.
+3. Generate an embedding for each chunk.
+4. Store chunks and embeddings in PostgreSQL with pgvector.
+5. Generate an embedding for each user question.
+6. Retrieve the nearest authorized chunks using cosine distance.
+7. Provide only the retrieved verified context to the chat model.
+8. Persist the question, answer, safety state, and citations.
 
-### Follow-up reminders
+## Document chunking
 
-Follow-up reminders use `appointment_date` with `due_date` as a fallback.
-Only `pending` and `scheduled` records with dates are eligible. Completed,
-cancelled, and missed records are excluded.
+`backend/src/services/chunkingService.ts`:
 
-### Test reminders
+- Normalizes repeated whitespace.
+- Produces bounded chunks with overlap.
+- Assigns deterministic chunk indexes.
+- Creates SHA-256 content hashes.
+- Returns no chunks for empty input.
+- Rejects invalid chunk-size and overlap settings.
 
-Medical-test reminders use `scheduled_date` and include the test name and
-available instructions. Only `pending` and `scheduled` records with dates are
-eligible.
+Only verified care-plan data is indexed by the chat service. Draft extraction
+data and raw medical-document text are not used as retrieved chat context.
 
-## Notification persistence and status
+## Embeddings
 
-The migration
-`backend/database/migrations/20260921_phase13_notifications.sql` adds the
-owner-scoped `notifications` table. It records:
+The provider supports both OpenAI-compatible embeddings and Gemini's native
+embedding request when the configured endpoint is Gemini-compatible.
 
-- notification kind and source record
-- title and body
-- scheduled time and deduplication key
-- unread/read state and `read_at`
-- delivery state: `pending`, `sent`, `failed`, or `skipped`
-- `delivered_at` and safe delivery error text
+For the configured Gemini environment, Phase 15 uses:
 
-The unique `(user_id, dedupe_key)` constraint prevents duplicate scheduled
-notifications.
+- Model: `gemini-embedding-001`
+- Native `embedContent` request format
+- `RETRIEVAL_DOCUMENT` for stored care-plan chunks
+- `RETRIEVAL_QUERY` for user questions
+- Output dimension: `1536`
 
-## Scheduling
+The PostgreSQL embedding column is `vector(1536)`. The provider validates that
+every returned vector has exactly 1536 finite numeric values. No fake or random
+embeddings are used.
 
-`startReminderScheduler()` starts one process-local interval. Repeated starts
-return the existing timer, and `stopReminderScheduler()` is available for
-tests and controlled shutdown. The scheduler is a backend reliability
-improvement; foreground browser polling remains available as a user-facing
-fallback.
+## pgvector retrieval
 
-## Email notifications
+The additive migration creates:
 
-`backend/src/services/emailService.ts` retains the existing password-reset
-email flow and adds `sendReminderEmail()`. Reminder email delivery is enabled
-only when:
+- `document_chunks`
+- A patient/document/care-plan ownership index
+- A partial HNSW cosine index for non-null embeddings
+- `chat_conversations`
+- `chat_messages`
 
-- `EMAIL_REMINDERS_ENABLED=true`
-- `EMAIL_USER` is configured
-- `EMAIL_PASS` is configured
+Retrieval returns up to five nearest chunks using pgvector cosine distance.
+Stored and query embeddings use the same configured embedding model and
+dimension.
 
-Missing configuration safely transitions a notification to `skipped`; the
-application does not crash. SMTP/provider credentials are never hard-coded.
+Apply the migration only to a PostgreSQL instance with pgvector available:
 
-## Push notifications
+```text
+backend/database/migrations/20260923_phase15_chat_pgvector.sql
+```
 
-The Phase 13 push foundation stores owner-scoped browser subscriptions and
-provides service-worker handling where configured. It does not claim real push
-delivery without a Web Push provider and VAPID configuration.
+The migration uses idempotent `IF NOT EXISTS` statements and is additive. It
+does not reset or delete existing database data.
 
-Required production configuration remains external:
+## Authorization and filtering
 
-- HTTPS in the deployed frontend
-- browser notification permission
-- VAPID public/private keys
-- a configured Web Push delivery provider
+The backend derives access from the authenticated request:
 
-## APIs
+- Patients can retrieve only their own verified care-plan context.
+- Caregivers must identify a patient explicitly.
+- Caregiver access requires an accepted, active, unexpired relationship with
+  the `view_care_plan` permission.
+- Retrieval is filtered by the authorized patient identity.
+- Retrieved rows retain `document_id` and `verified_care_plan_id` provenance.
+- Another patient's documents, draft data, and raw unverified content are not
+  eligible for chat context.
 
-Existing authenticated reminder feeds remain available:
+## Grounded responses
 
-- `GET /api/reminders/upcoming`
-- `GET /api/follow-ups/reminders/upcoming`
-- `GET /api/medical-tests/reminders/upcoming`
+The chat prompt instructs the model to answer only from the verified context
+supplied by the server. When the retrieved context does not contain the
+requested information, the assistant returns a safe unavailable-information
+response rather than guessing.
 
-New authenticated notification APIs:
+Generated answers are checked for unsafe claims before they are returned.
+Responses that contain unsupported diagnosis, prescribing, dosage-change, or
+similar claims are replaced with the safe unavailable-information response.
 
-- `GET /api/notifications`
-- `GET /api/notifications/unread`
-- `PATCH /api/notifications/:id/read`
+## Chat history
 
-Push subscription APIs, when the push foundation is enabled, are owner-scoped
-and use the existing bearer-token authentication.
+Each successful chat turn stores:
 
-- `POST /api/notifications/push-subscriptions`
-- `DELETE /api/notifications/push-subscriptions/:id`
+- The patient scope.
+- The authenticated creator.
+- The user message.
+- The assistant response.
+- Retrieved citations.
+- Whether the response was safety-restricted.
+- Creation timestamps.
 
-## Frontend reminder behavior
+History is available through the authenticated history endpoint and is shown
+in the frontend assistant card.
 
-`frontend/src/main.js` now:
+## Safety and disclaimer behavior
 
-- clears existing reminder intervals before dashboard rerenders and logout
-- invalidates stale in-flight polling work
-- enforces the page mute state
-- reports reminder polling failures in the dashboard
-- caches medication, follow-up, and medical-test requests per render
+The assistant:
 
-The existing browser `Notification` API and reminder sound behavior are
-preserved. They remain foreground, browser-tab behavior rather than a
-replacement for server delivery.
+- Does not diagnose.
+- Does not prescribe.
+- Does not recommend changing, increasing, decreasing, or stopping medication.
+- Does not disclose another patient's records.
+- Does not follow prompt-injection instructions.
+- Does not answer unsupported questions as if they were verified facts.
+- Returns emergency guidance for urgent indicators such as chest pain,
+  difficulty breathing, severe bleeding, overdose, or unconsciousness.
 
-## Environment variables
+The interface states that responses are informational, use only verified care
+information, are not a diagnosis, and do not replace a clinician. Emergency
+concerns should be directed to local emergency services.
 
-Documented in `backend/.env.example`:
+## Backend API
 
-- `EMAIL_USER`
-- `EMAIL_PASS`
-- `EMAIL_REMINDERS_ENABLED`
-- `REMINDER_INTERVAL_MS`
-- `VITE_VAPID_PUBLIC_KEY` (frontend, optional)
+All chat routes require the existing bearer-token authentication middleware.
 
-Push provider/VAPID settings are intentionally not populated with fake values.
-They must be supplied through deployment configuration before production push
-delivery is enabled.
+### Send a chat message
 
-## Testing and validation
+```http
+POST /api/chat
+Content-Type: application/json
+Authorization: Bearer <access-token>
+```
 
-Focused Phase 13 backend tests are in
-`backend/test/reminderEngine.test.ts`. Existing tracker and medication tests
-remain unchanged.
+Request body:
 
-Frontend reminder behavior is covered by
-`frontend/test/reminderUtils.test.js`; Phase 12 tracker coverage remains in
-`frontend/test/trackerUtils.test.js`.
+```json
+{
+  "message": "What does my verified care plan say about my follow-up?"
+}
+```
 
-Validation commands:
+An optional authorized caregiver request may include:
+
+```json
+{
+  "message": "What does the verified care plan say about follow-up?",
+  "patient_id": "<authorized-patient-id>"
+}
+```
+
+### Retrieve chat history
+
+```http
+GET /api/chat/history
+Authorization: Bearer <access-token>
+```
+
+Optional query parameters:
+
+- `patient_id`
+- `conversation_id`
+
+Successful chat responses include the grounded answer, citations, conversation
+metadata, and the safety-restricted state.
+
+## Frontend integration
+
+The patient dashboard renders the assistant from
+`frontend/src/main.js`. Submit behavior is isolated in
+`frontend/src/chatUtils.js` and:
+
+- Reads the current textarea value.
+- Submits consecutive questions correctly.
+- Displays success and error states.
+- Resets the form only after a successful request.
+- Keeps native required-field validation enabled.
+
+## Phase 15 files and modules
+
+### Backend
+
+- `backend/database/migrations/20260923_phase15_chat_pgvector.sql`
+- `backend/src/controllers/chatController.ts`
+- `backend/src/routes/chatRoutes.ts`
+- `backend/src/services/chatService.ts`
+- `backend/src/services/chunkingService.ts`
+- `backend/src/services/llmProvider.ts`
+- `backend/src/server.ts`
+- `backend/test/phase15Chat.test.ts`
+
+### Frontend
+
+- `frontend/src/main.js`
+- `frontend/src/chatUtils.js`
+- `frontend/test/chatUtils.test.js`
+- `frontend/package.json`
+
+### Documentation and configuration templates
+
+- `docs/PHASE15_README.md`
+- `backend/.env.example`
+- `docker-compose.yml`
+
+## Environment setup
+
+Use the example template only. Do not place credentials in source control.
+
+```powershell
+Copy-Item backend\.env.example backend\.env
+```
+
+Configure the local `backend/.env` with environment-specific values for:
+
+- `AI_API_KEY`
+- `AI_BASE_URL`
+- `AI_MODEL`
+- `AI_EMBEDDING_MODEL`
+- Existing database and authentication settings required by the application
+
+For the Gemini-compatible endpoint used by the verified implementation,
+configure:
+
+```text
+AI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
+AI_EMBEDDING_MODEL=gemini-embedding-001
+```
+
+Keep `backend/.env` local and untracked. Never copy real keys, passwords,
+tokens, or database credentials into `README.md` or `.env.example`.
+
+## Testing and verification
+
+### Backend
+
+```powershell
+cd backend
+npm run build
+npx tsx --test test/phase15Chat.test.ts
+```
+
+Phase 15 focused backend result:
+
+- 8 tests passed
+- 0 tests failed
+
+The full backend suite also passed with 123 tests.
+
+### Frontend
 
 ```powershell
 cd frontend
-npm run test:reminders
+npm run build
+npm run test:chat
 npm run test:trackers
-npm run build
-
-cd ..\backend
-npm run build
-npx tsx --test test/reminderEngine.test.ts
-npx tsx --test test/followUpTracking.test.ts
-npx tsx --test test/medicationManagement.test.ts
+npm run test:caregivers
+npm run test:reminders
 ```
 
-## Status and limitations
+Verified frontend results:
 
-- **[IMPLEMENTED]** Centralized reminder generation for medicines, follow-ups,
-  and medical tests.
-- **[IMPLEMENTED]** Owner-scoped notification persistence, deduplication,
-  read state, and delivery status.
-- **[IMPLEMENTED]** Singleton backend scheduler and failure-isolated email
-  delivery path.
-- **[IMPLEMENTED]** Frontend timer lifecycle, mute enforcement, request
-  caching, and polling error handling.
-- **[PARTIALLY IMPLEMENTED]** Browser notifications remain foreground-only;
-  background delivery requires push provider configuration.
-- **[REQUIRES CONFIGURATION]** SMTP credentials and
-  `EMAIL_REMINDERS_ENABLED=true` are required for reminder email delivery.
-- **[REQUIRES CONFIGURATION]** HTTPS, VAPID keys, and a Web Push provider are
-  required for production push delivery.
+- Production build passed.
+- Chat consecutive-submit regression test passed.
+- Tracker tests: 10 passed.
+- Caregiver tests: 2 passed.
+- Reminder tests: 5 passed.
+- Frontend diagnostics reported no errors.
+
+### Live verification
+
+The verified environment confirmed:
+
+- PostgreSQL pgvector extension is available.
+- `document_chunks.embedding` is `vector(1536)`.
+- Gemini returned 1536-dimensional embeddings.
+- Authorized retrieval returned verified chunk citations.
+- `POST /api/chat` returned HTTP 201 for tested messages.
+- `GET /api/chat/history` returned HTTP 200.
+
+## Security notes
+
+- API keys and credentials are read from environment variables.
+- Provider diagnostics never log authorization headers or API keys.
+- `.env` files must remain local and untracked.
+- Chat retrieval is server-authorized and patient-scoped.
+- Citations preserve verified document and care-plan provenance.
+- The migration is additive and does not require deleting existing data.
+- The assistant must not be treated as a clinician or emergency service.
+
+## Run Phase 15 locally
+
+1. Ensure PostgreSQL is running with the pgvector extension installed.
+2. Configure local environment values using `backend/.env.example`.
+3. Apply `backend/database/migrations/20260923_phase15_chat_pgvector.sql`
+   to the intended database.
+4. Start the backend:
+
+   ```powershell
+   cd backend
+   npm run dev
+   ```
+
+5. Start the frontend in a second terminal:
+
+   ```powershell
+   cd frontend
+   npm run dev
+   ```
+
+6. Sign in with an authorized test account.
+7. Open the care management dashboard.
+8. Use the Verified Care Assistant with a question about the verified care
+   information available to that account.
+
+## Phase 15 completion status
+
+**[COMPLETE]** Phase 15 implementation and verification are complete.
+
+The verified care assistant includes deterministic verified-data chunking,
+Gemini-compatible 1536-dimensional embeddings, pgvector retrieval, patient and
+caregiver authorization, grounded responses, persistent citations and chat
+history, safety restrictions, frontend integration, focused tests, build
+verification, and additive database initialization.
