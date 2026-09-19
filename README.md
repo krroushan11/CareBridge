@@ -345,3 +345,36 @@ Gemini-compatible 1536-dimensional embeddings, pgvector retrieval, patient and
 caregiver authorization, grounded responses, persistent citations and chat
 history, safety restrictions, frontend integration, focused tests, build
 verification, and additive database initialization.
+
+## PHASE 16 – MULTILINGUAL SIMPLIFICATION
+
+**[COMPLETE / VERIFIED]** Phase 16 adds a safe post-grounding language and
+plain-language layer to the Verified Care Assistant.
+
+- [✓] Simple English
+- [✓] Hindi
+- [✓] Selected Indian Languages
+- [✓] Plain-Language Explanation
+- [✓] Language Selector
+- [✓] Medical Information Simplification
+- [✓] Safety Constraints for Translation
+
+The assistant supports English, Simple English, Hindi, Bengali, Marathi,
+Tamil, Telugu, Kannada, Gujarati, Punjabi, and Malayalam. Its accessible
+language selector and plain-language explanation control persist for the
+current browser session without reloading the application.
+
+Language translation or simplification happens only after the existing Phase
+15 grounded answer is established. If the language layer cannot preserve the
+required safety requirements, clinical values, medication names, dosage,
+units, dates, warnings, or uncertainty, CareBridge safely returns the original
+grounded response. Phase 15 authorization, patient-scoped retrieval,
+citations, grounding, and safety protections remain intact.
+
+### Phase 16 verification summary
+
+- Backend and frontend tests passed, including Phase 15 regression and Phase
+  16 language/safety coverage.
+- `git diff --check` passed.
+- No `.env` files, secrets, API keys, PEM/private-key files, or other
+  sensitive files are included in the Phase 16 changes.
