@@ -7,10 +7,13 @@ import {
   listChatHistory,
   resolveChatAccess,
 } from "../services/chatService";
+import { LANGUAGE_CONFIG } from "../services/languageService";
 
 const chatSchema = z.object({
   message: z.string().trim().min(1).max(4000),
   patient_id: z.string().uuid().optional(),
+  language: z.enum(LANGUAGE_CONFIG.map((item) => item.code) as [string, ...string[]]).optional(),
+  simplify: z.boolean().optional(),
 }).strict();
 
 const user = (req: Request) => (req as AuthRequest).user;
@@ -23,7 +26,10 @@ export const postChat = async (req: Request, res: Response) => {
   try {
     const access = await resolveChatAccess(authenticated.id, authenticated.role, parsed.data.patient_id);
     if (!access) return res.status(403).json({ success: false, message: "Chat access is not authorized" });
-    const result = await createChatTurn(access, authenticated.id, parsed.data.message);
+    const result = await createChatTurn(access, authenticated.id, parsed.data.message, undefined, undefined, {
+      language: parsed.data.language as any,
+      simplify: parsed.data.simplify,
+    });
     return res.status(201).json({ success: true, ...result });
   } catch (error) {
     console.error("Chat request failed", error instanceof Error ? error.message : "unknown error");

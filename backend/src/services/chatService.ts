@@ -3,6 +3,7 @@ import { pool } from "../config/database";
 import { findActiveRelationshipForUser, hasPermission } from "./caregiverService";
 import { chunkText } from "./chunkingService";
 import { createConfiguredLlmProvider, getConfiguredEmbeddingModel, LlmProvider } from "./llmProvider";
+import { LanguageRequest, localizeVerifiedResponse } from "./languageService";
 
 export interface ChatAccess {
   patientId: string;
@@ -147,12 +148,15 @@ export const createChatTurn = async (
   userId: string,
   question: string,
   provider: LlmProvider = createConfiguredLlmProvider(),
-  client: Pool | PoolClient = pool
+  client: Pool | PoolClient = pool,
+  languageRequest: LanguageRequest = {}
 ) => {
   await indexVerifiedCarePlans(access.patientId, provider, client);
   const context = await retrieveVerifiedContext(access.patientId, question, provider, client);
   const restricted = isUrgent(question) || isRestrictedQuestion(question);
-  const answer = await answerChat(question, context, provider);
+  const groundedAnswer = await answerChat(question, context, provider);
+  const localized = await localizeVerifiedResponse(groundedAnswer, languageRequest, provider);
+  const answer = localized.answer;
   const conversation = await client.query(
     `INSERT INTO chat_conversations (patient_id, created_by)
      VALUES ($1, $2) RETURNING id, created_at, updated_at`,
@@ -164,7 +168,12 @@ export const createChatTurn = async (
      VALUES ($1, 'user', $2, '[]'::jsonb, $3), ($1, 'assistant', $4, $5::jsonb, $3)`,
     [conversationId, question, restricted, answer, JSON.stringify(context)]
   );
-  return { conversation: conversation.rows[0], answer, citations: context, safety_restricted: restricted };
+  return {
+    conversation: conversation.rows[0], answer, citations: context, safety_restricted: restricted,
+    language: localized.metadata.language, mode: localized.metadata.mode,
+    grounded: context.length > 0, translated: localized.metadata.translated,
+    safety_checked: localized.metadata.safety_checked,
+  };
 };
 
 export const listChatHistory = async (

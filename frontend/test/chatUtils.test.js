@@ -28,7 +28,7 @@ test("chat form submits two consecutive questions using current values", async (
     FormDataConstructor: FormDataStub,
     request: async (_path, options) => {
       const body = JSON.parse(options.body);
-      requests.push(body.message);
+      requests.push(body);
       return { answer: `Response for ${body.message}` };
     },
   });
@@ -39,12 +39,30 @@ test("chat form submits two consecutive questions using current values", async (
   messages.push(form.message.textContent);
 
   assert.deepEqual(requests, [
-    "Hlw",
-    "What does my verified care plan say about my follow-up?",
+    { message: "Hlw", language: "en", simplify: false },
+    { message: "What does my verified care plan say about my follow-up?", language: "en", simplify: false },
   ]);
   assert.deepEqual(messages, [
     "Response for Hlw",
     "Response for What does my verified care plan say about my follow-up?",
   ]);
   assert.equal(form.resetCount, 2);
+});
+
+test("chat submission sends the selected language and plain-language mode", async () => {
+  const controls = {
+    "#chat-message": { textContent: "", className: "" },
+    "#chat-language": { value: "ta" },
+    "#chat-simplify": { checked: true },
+    "button[type=submit]": { disabled: false },
+  };
+  const form = { querySelector: (selector) => controls[selector], reset() {} };
+  class FormDataStub { get() { return "What does my plan say?"; } }
+  let payload;
+  await createChatSubmitHandler({ FormDataConstructor: FormDataStub, request: async (_path, options) => {
+    payload = JSON.parse(options.body);
+    return { answer: "Verified response" };
+  } })({ currentTarget: form, preventDefault() {} });
+  assert.deepEqual(payload, { message: "What does my plan say?", language: "ta", simplify: true });
+  assert.equal(controls["button[type=submit]"].disabled, false);
 });

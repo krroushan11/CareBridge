@@ -25,10 +25,13 @@ import {
 } from "./trackerUtils.js";
 import { CAREGIVER_PERMISSIONS, permissionChecked, relationshipLabel } from "./caregiverUtils.js";
 import { createChatSubmitHandler } from "./chatUtils.js";
+import { CHAT_LANGUAGES, isChatLanguage } from "./languageConfig.js";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000";
 const main = document.querySelector("main");
 const tokenKey = "carebridge_token";
+const chatLanguageKey = "carebridge_chat_language";
+const chatSimplifyKey = "carebridge_chat_simplify";
 const token = () => localStorage.getItem(tokenKey);
 const documentId = () => new URLSearchParams(window.location.search).get("document");
 const role = () => {
@@ -209,10 +212,12 @@ const renderChatSection = async () => {
     // The chat card remains available and reports the request error on submit.
   }
   const messages = history.flatMap((conversation) => conversation.messages || []).slice(-8);
+  const selectedLanguage = isChatLanguage(sessionStorage.getItem(chatLanguageKey)) ? sessionStorage.getItem(chatLanguageKey) : "en";
+  const simplify = sessionStorage.getItem(chatSimplifyKey) === "true";
   return `<section class="card"><h2>Verified care assistant</h2>
     <p class="disclaimer">Answers use only your verified care information. This is not a diagnosis or a replacement for a clinician. For emergencies, contact local emergency services.</p>
     <div class="data-card">${messages.length ? messages.map((item) => `<p><strong>${item.role === "user" ? "You" : "CareBridge"}:</strong> ${escapeHtml(item.content)}</p>`).join("") : "<p class=\"muted\">Ask a question about your verified care information.</p>"}</div>
-    <form id="chat-form"><label for="chat-question">Question <textarea id="chat-question" required name="message" form="chat-form" rows="3" maxlength="4000" placeholder="What does my verified care plan say about my follow-up?"></textarea></label><button type="submit" form="chat-form">Ask CareBridge</button><p id="chat-message" class="message" role="alert"></p></form>
+    <form id="chat-form"><div class="filter-row"><label for="chat-language">Language <select id="chat-language" name="language">${CHAT_LANGUAGES.filter((item) => item.enabled).map((item) => `<option value="${item.code}" ${item.code === selectedLanguage ? "selected" : ""}>${item.displayName}</option>`).join("")}</select></label><label for="chat-simplify"><input id="chat-simplify" type="checkbox" ${simplify ? "checked" : ""}> Plain-language explanation</label></div><label for="chat-question">Question <textarea id="chat-question" required name="message" form="chat-form" rows="3" maxlength="4000" placeholder="What does my verified care plan say about my follow-up?"></textarea></label><button type="submit" form="chat-form">Ask CareBridge</button><p id="chat-message" class="message" role="alert"></p></form>
   </section>`;
 };
 
@@ -533,6 +538,8 @@ const renderMedicationDashboard = async () => {
 
     document.querySelector("#logout").onclick = logout;
     document.querySelector("#chat-form").onsubmit = createChatSubmitHandler({ request });
+    document.querySelector("#chat-language").onchange = (event) => sessionStorage.setItem(chatLanguageKey, event.currentTarget.value);
+    document.querySelector("#chat-simplify").onchange = (event) => sessionStorage.setItem(chatSimplifyKey, String(event.currentTarget.checked));
     const inviteForm = document.querySelector("#caregiver-invite-form");
     if (inviteForm) inviteForm.onsubmit = async (event) => {
       event.preventDefault();
