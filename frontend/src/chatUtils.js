@@ -19,7 +19,15 @@ export const createChatSubmitHandler = ({
       body: JSON.stringify({ message: form.get("message"), language, simplify }),
     });
     message.textContent = result.answer;
-    message.className = "message success";
+    const emergencySeverity = result.emergency?.severity;
+    const isEmergency = emergencySeverity === "EMERGENCY" || emergencySeverity === "URGENT";
+    message.className = isEmergency
+      ? `message emergency-alert emergency-${emergencySeverity.toLowerCase()}`
+      : "message success";
+    if (typeof message.setAttribute === "function") {
+      message.setAttribute("role", isEmergency ? "alert" : "status");
+      message.setAttribute("aria-live", isEmergency ? "assertive" : "polite");
+    }
     formElement.reset();
     if (languageControl) languageControl.value = language;
     if (simplifyControl) simplifyControl.checked = simplify && language !== "en-simple";

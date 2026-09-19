@@ -4,6 +4,7 @@ import { findActiveRelationshipForUser, hasPermission } from "./caregiverService
 import { chunkText } from "./chunkingService";
 import { createConfiguredLlmProvider, getConfiguredEmbeddingModel, LlmProvider } from "./llmProvider";
 import { LanguageRequest, localizeVerifiedResponse } from "./languageService";
+import { assessEmergency } from "./emergencySafety";
 
 export interface ChatAccess {
   patientId: string;
@@ -117,8 +118,7 @@ export const retrieveVerifiedContext = async (
   }));
 };
 
-const isUrgent = (message: string) =>
-  /\b(chest pain|can't breathe|cannot breathe|difficulty breathing|severe bleeding|overdose|suicid|unconscious|stroke)\b/i.test(message);
+const isUrgent = (message: string) => assessEmergency(message).severity !== "NONE";
 
 const chatSystemPrompt = [
   "You are CareBridge's safety-restricted health information assistant.",
@@ -151,6 +151,32 @@ export const createChatTurn = async (
   client: Pool | PoolClient = pool,
   languageRequest: LanguageRequest = {}
 ) => {
+  const emergency = assessEmergency(question);
+  if (emergency.severity !== "NONE") {
+    const conversation = await client.query(
+      `INSERT INTO chat_conversations (patient_id, created_by)
+       VALUES ($1, $2) RETURNING id, created_at, updated_at`,
+      [access.patientId, userId]
+    );
+    const conversationId = conversation.rows[0].id as string;
+    await client.query(
+      `INSERT INTO chat_messages (conversation_id, role, content, citations, safety_restricted)
+       VALUES ($1, 'user', $2, '[]'::jsonb, TRUE), ($1, 'assistant', $3, '[]'::jsonb, TRUE)`,
+      [conversationId, question, emergency.response]
+    );
+    return {
+      conversation: conversation.rows[0],
+      answer: emergency.response,
+      citations: [],
+      safety_restricted: true,
+      emergency: { severity: emergency.severity, category: emergency.category },
+      language: "en",
+      mode: "standard",
+      grounded: false,
+      translated: false,
+      safety_checked: true,
+    };
+  }
   await indexVerifiedCarePlans(access.patientId, provider, client);
   const context = await retrieveVerifiedContext(access.patientId, question, provider, client);
   const restricted = isUrgent(question) || isRestrictedQuestion(question);
@@ -173,6 +199,7 @@ export const createChatTurn = async (
     language: localized.metadata.language, mode: localized.metadata.mode,
     grounded: context.length > 0, translated: localized.metadata.translated,
     safety_checked: localized.metadata.safety_checked,
+    emergency: { severity: "NONE" },
   };
 };
 

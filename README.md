@@ -346,6 +346,37 @@ caregiver authorization, grounded responses, persistent citations and chat
 history, safety restrictions, frontend integration, focused tests, build
 verification, and additive database initialization.
 
+## PHASE 17 — EMERGENCY SAFETY LAYER
+
+**[IMPLEMENTED]** Phase 17 adds deterministic emergency detection and
+accessible escalation guidance before normal RAG retrieval, LLM generation, or
+Phase 16 language transformation.
+
+The predefined safety rules classify supported messages as `NONE`, `URGENT`, or
+`EMERGENCY`. Emergency categories include severe breathing difficulty,
+concerning chest symptoms, stroke warning signs, uncontrolled or severe
+bleeding, seizure or unresponsiveness, severe allergic reaction or anaphylaxis,
+and self-harm emergencies.
+Suspected overdose or poisoning is also escalated as an emergency.
+
+Emergency detection is performed by
+`backend/src/services/emergencySafety.ts`. The LLM never decides whether a
+message is an emergency. Emergency requests retain the existing
+authentication, authorization, and chat persistence protections, but do not
+index care plans, generate embeddings, retrieve patient records, call the chat
+model, or invoke the Phase 16 translation layer. They return concise,
+non-diagnostic instructions to contact the user's local emergency service or
+the nearest emergency department, without inventing phone numbers.
+
+The frontend renders emergency responses with an assertive accessible alert
+treatment. Approved emergency wording remains in English and is not weakened
+or translated by the Phase 16 language layer.
+
+Phase 17 focused coverage is in
+`backend/test/phase17Emergency.test.ts` and
+`frontend/test/emergencyUtils.test.js`. Detailed rules and verification notes
+are documented in [docs/PHASE17_README.md](docs/PHASE17_README.md).
+
 ## PHASE 16 – MULTILINGUAL SIMPLIFICATION
 
 **[COMPLETE / VERIFIED]** Phase 16 adds a safe post-grounding language and
