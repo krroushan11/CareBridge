@@ -1,3 +1,11 @@
+# Phase 14 — Family & Caregiver Coordination
+
+Phase 14 adds patient-scoped caregiver invitations, explicit least-privilege
+permissions, shared verified care information, and server-side access
+revocation. The implementation, validation results, known limitations, and
+local-only Step 16 production-configuration verification status are documented
+in [docs/PHASE14_README.md](docs/PHASE14_README.md).
+
 # Phase 13 — Notifications & Reminders
 
 ## Objective
@@ -181,11 +189,3 @@ npx tsx --test test/medicationManagement.test.ts
   `EMAIL_REMINDERS_ENABLED=true` are required for reminder email delivery.
 - **[REQUIRES CONFIGURATION]** HTTPS, VAPID keys, and a Web Push provider are
   required for production push delivery.
-
-# Phase 14 — Family & Caregiver Coordination
-
-Phase 14 adds patient-scoped caregiver invitations, explicit least-privilege
-permissions, shared verified care information, and server-side access
-revocation. The implementation, validation results, known limitations, and
-local-only Step 16 production-configuration verification status are documented
-in [docs/PHASE14_README.md](docs/PHASE14_README.md).
