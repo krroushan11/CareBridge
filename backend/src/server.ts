@@ -14,6 +14,7 @@ import { validateJwtSecret } from "./middlewares/authMiddleware";
 import { startDocumentProcessingWorker } from "./services/documentProcessingQueue";
 import notificationRoutes from "./routes/notificationRoutes";
 import { startReminderScheduler } from "./services/reminderEngine";
+import caregiverRoutes from "./routes/caregiverRoutes";
 
 dotenv.config();
 
@@ -39,6 +40,7 @@ app.use("/api/follow-ups", followUpRoutes);
 app.use("/api/medical-tests", medicalTestRoutes);
 app.use("/api/reminders", reminderRoutes);
 app.use("/api/notifications", notificationRoutes);
+app.use("/api/caregivers", caregiverRoutes);
 
 startDocumentProcessingWorker();
 startReminderScheduler();

@@ -9,16 +9,21 @@ import {
 } from "./reminderUtils.js";
 import {
   buildCareManagementSummary,
+  buildMedicationSchedule,
+  aggregateMedicationAdherence,
   dashboardMetrics,
   effectiveDate,
   FOLLOW_UP_STATUSES,
   formatTrackingDate,
   isOverdue,
   isReminderEligible,
+  medicationDoseStatus,
+  medicationStatusLabel,
   MEDICAL_TEST_STATUSES,
   reminderReadyItems,
   statusBadgeClass,
 } from "./trackerUtils.js";
+import { CAREGIVER_PERMISSIONS, permissionChecked, relationshipLabel } from "./caregiverUtils.js";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000";
 const main = document.querySelector("main");
@@ -174,6 +179,72 @@ const renderClinicianDashboard = async () => {
     });
   } catch (error) {
     main.innerHTML = `<section class="card"><p class="message">${escapeHtml(error.message)}</p></section>`;
+  }
+};
+
+const caregiverPermissionFields = (permissions = [], prefix = "") => CAREGIVER_PERMISSIONS.map((permission) => `
+  <label><input type="checkbox" data-permission="${prefix}${permission}" value="${permission}" ${permissionChecked(permissions, permission) ? "checked" : ""}> ${permission.replaceAll("_", " ")}</label>`).join("");
+
+const renderPatientCaregiverSection = async () => {
+  try {
+    const result = await request("/api/caregivers");
+    const relationships = result.relationships || [];
+    return `<section class="card"><h2>Family & caregiver access</h2>
+      <form id="caregiver-invite-form"><label>Caregiver email <input required type="email" name="caregiver_email" autocomplete="email"></label>
+      <fieldset><legend>Initial permissions</legend>${caregiverPermissionFields(["view_care_plan", "view_tasks", "view_follow_ups", "view_medical_tests", "view_medications"])}</fieldset>
+      <button>Send invitation</button><p id="caregiver-invite-message" class="message" role="alert"></p></form>
+      <div class="data-grid">${relationships.length ? relationships.map((item) => `<article class="data-card"><h3>${escapeHtml(item.caregiver?.name || item.invited_email)}</h3><p>${escapeHtml(relationshipLabel(item, tokenUserId()))}</p><p>Status: <span class="badge badge-${escapeHtml(item.status)}">${escapeHtml(item.status)}</span></p><p class="muted">Permissions: ${escapeHtml((item.permissions || []).join(", ") || "None")}</p>${item.status === "accepted" ? `<div class="actions"><button data-revoke-caregiver="${item.id}" class="secondary">Revoke access</button></div><details><summary>Update permissions</summary><div data-permission-editor="${item.id}">${caregiverPermissionFields(item.permissions, `${item.id}:`)}</div><button data-save-permissions="${item.id}">Save permissions</button></details>` : ""}</article>`).join("") : "<p>No caregiver relationships yet.</p>"}</div>
+    </section>`;
+  } catch (error) {
+    return sectionCard("Family & caregiver access", `<p class="message">${escapeHtml(error.message || "Unable to load caregiver access")}</p>`);
+  }
+};
+
+const tokenUserId = () => {
+  try { return JSON.parse(atob(token().split(".")[1])).id; } catch { return null; }
+};
+
+const renderCaregiverDashboard = async () => {
+  main.innerHTML = `<section class="card loading" aria-live="polite">Loading caregiver dashboard…</section>`;
+  try {
+    const result = await request("/api/caregivers");
+    const relationships = result.relationships || [];
+    const pending = relationships.filter((item) => item.status === "pending" && item.caregiver_id === tokenUserId());
+    const connected = relationships.filter((item) => item.status === "accepted" && item.caregiver_id === tokenUserId());
+    const relationshipCards = relationships.map((item) => {
+      const isInvite = item.status === "pending" && item.caregiver_id === tokenUserId();
+      return `<article class="data-card"><h3>${escapeHtml(item.patient?.name || item.patient?.email || "Patient")}</h3><p>${escapeHtml(relationshipLabel(item, tokenUserId()))}</p><p>Status: <span class="badge badge-${escapeHtml(item.status)}">${escapeHtml(item.status)}</span></p>${escapeHtml((item.permissions || []).join(", ") || "No permissions assigned")}${isInvite ? `<div class="actions"><button data-accept-caregiver="${item.id}">Accept</button><button class="secondary" data-reject-caregiver="${item.id}">Reject</button></div>` : ""}<div id="caregiver-resource-${item.id}"></div></article>`;
+    }).join("");
+    main.innerHTML = `<header class="topbar"><h1>Caregiver dashboard</h1><button id="logout">Sign out</button></header>
+      <section class="card"><h2>Connected care relationships</h2><p class="muted">${connected.length} active patient relationship(s), ${pending.length} pending invitation(s).</p><div class="data-grid">${relationshipCards || "<p>No caregiver invitations or connected patients.</p>"}</div></section>`;
+    document.querySelector("#logout").onclick = logout;
+    document.querySelectorAll("[data-accept-caregiver]").forEach((button) => button.onclick = async () => {
+      try { await request(`/api/caregivers/${button.dataset.acceptCaregiver}/accept`, { method: "POST" }); renderCaregiverDashboard(); }
+      catch (error) { window.alert(error.message); }
+    });
+    document.querySelectorAll("[data-reject-caregiver]").forEach((button) => button.onclick = async () => {
+      try { await request(`/api/caregivers/${button.dataset.rejectCaregiver}/reject`, { method: "POST" }); renderCaregiverDashboard(); }
+      catch (error) { window.alert(error.message); }
+    });
+    for (const relationship of connected) {
+      const resource = document.querySelector(`#caregiver-resource-${relationship.id}`);
+      try {
+        const [tasks, plan] = await Promise.all([
+          request(`/api/caregivers/${relationship.id}/tasks`),
+          permissionChecked(relationship.permissions, "view_care_plan") ? request(`/api/caregivers/${relationship.id}/care-plan`) : Promise.resolve({ care_plan: null }),
+        ]);
+        const taskItems = [
+          ...(tasks.follow_ups || []).map((item) => ({ title: item.title, date: item.appointment_date || item.due_date, status: item.status })),
+          ...(tasks.medical_tests || []).map((item) => ({ title: item.test_name, date: item.scheduled_date, status: item.status })),
+        ].slice(0, 8);
+        resource.innerHTML = `<h4>Shared care information</h4>${plan.care_plan ? `<p>Verified care plan updated ${escapeHtml(new Date(plan.care_plan.updated_at).toLocaleString())}.</p>` : "<p>No shared care plan is available.</p>"}${taskItems.length ? `<ul>${taskItems.map((item) => `<li>${escapeHtml(item.title)} — ${escapeHtml(item.date || "No date")} — <span class="badge badge-${escapeHtml(item.status)}">${escapeHtml(item.status)}</span></li>`).join("")}</ul>` : "<p>No shared tasks are available with your permissions.</p>"}`;
+      } catch (error) {
+        resource.innerHTML = `<p class="message">${escapeHtml(error.message || "Unable to load shared care information")}</p>`;
+      }
+    }
+  } catch (error) {
+    main.innerHTML = `<section class="card"><h1>Unable to load caregiver dashboard</h1><p class="message">${escapeHtml(error.message)}</p><button id="retry">Try again</button></section>`;
+    document.querySelector("#retry").onclick = renderCaregiverDashboard;
   }
 };
 
@@ -398,11 +469,12 @@ const renderMedicationDashboard = async () => {
   };
 
   try {
-    const [medicationHtml, followUpHtml, testHtml, recoveryHtml] = await Promise.all([
+    const [medicationHtml, followUpHtml, testHtml, recoveryHtml, caregiverHtml] = await Promise.all([
       medicationSection(),
       followUpSection(),
       medicalTestSection(),
       recoverySection(),
+      renderPatientCaregiverSection(),
     ]);
     const reminderPermission = "Notification" in window ? Notification.permission : "unsupported";
     const soundEnabled = readReminderSoundPreference(window.localStorage);
@@ -428,6 +500,7 @@ const renderMedicationDashboard = async () => {
       ${followUpHtml}
       ${testHtml}
       ${recoveryHtml}
+      ${caregiverHtml}
       ${renderTrackingSections(
         (await cachedRequest(followUpsPath())).follow_ups || [],
         (await cachedRequest(medicalTestsPath())).medical_tests || [],
@@ -441,6 +514,29 @@ const renderMedicationDashboard = async () => {
     `;
 
     document.querySelector("#logout").onclick = logout;
+    const inviteForm = document.querySelector("#caregiver-invite-form");
+    if (inviteForm) inviteForm.onsubmit = async (event) => {
+      event.preventDefault();
+      const form = new FormData(event.currentTarget);
+      const permissions = [...event.currentTarget.querySelectorAll("input[data-permission]:checked")].map((input) => input.value);
+      const message = document.querySelector("#caregiver-invite-message");
+      try {
+        await request("/api/caregivers/invite", { method: "POST", body: JSON.stringify({ caregiver_email: form.get("caregiver_email"), permissions }) });
+        message.textContent = "Invitation created.";
+        message.className = "message success";
+        renderMedicationDashboard();
+      } catch (error) { message.textContent = error.message; }
+    };
+    document.querySelectorAll("[data-revoke-caregiver]").forEach((button) => button.onclick = async () => {
+      try { await request(`/api/caregivers/${button.dataset.revokeCaregiver}/revoke`, { method: "POST" }); renderMedicationDashboard(); }
+      catch (error) { window.alert(error.message); }
+    });
+    document.querySelectorAll("[data-save-permissions]").forEach((button) => button.onclick = async () => {
+      const editor = document.querySelector(`[data-permission-editor="${button.dataset.savePermissions}"]`);
+      const permissions = [...editor.querySelectorAll("input:checked")].map((input) => input.value);
+      try { await request(`/api/caregivers/${button.dataset.savePermissions}/permissions`, { method: "PATCH", body: JSON.stringify({ permissions }) }); renderMedicationDashboard(); }
+      catch (error) { window.alert(error.message); }
+    });
     document.querySelectorAll("[data-retry-section]").forEach((button) => button.onclick = () => renderMedicationDashboard());
 
     document.querySelectorAll("[data-dose-action]").forEach((button) => button.onclick = async () => {
@@ -544,6 +640,7 @@ const renderApp = async () => {
   if (!token()) return renderAuth();
   if (!documentId()) {
     if (role() === "doctor") return renderClinicianDashboard();
+    if (role() === "caregiver") return renderCaregiverDashboard();
     return renderMedicationDashboard();
   }
   main.innerHTML = `<section class="card loading" aria-live="polite">Loading secure review…</section>`;

@@ -19,6 +19,8 @@ services:
       - ./backend/database/migrations/20260918_phase9_verified_care_plan_trackers.sql:/docker-entrypoint-initdb.d/008_phase9_verified_care_plan_trackers.sql:ro
       - ./backend/database/migrations/20260919_phase10_medication_management.sql:/docker-entrypoint-initdb.d/009_phase10_medication_management.sql:ro
       - ./backend/database/migrations/20260920_phase11_follow_ups_tests.sql:/docker-entrypoint-initdb.d/010_phase11_follow_ups_tests.sql:ro
+      - ./backend/database/migrations/20260921_phase13_notifications.sql:/docker-entrypoint-initdb.d/011_phase13_notifications.sql:ro
+      - ./backend/database/migrations/20260922_phase14_caregiver_coordination.sql:/docker-entrypoint-initdb.d/012_phase14_caregiver_coordination.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
