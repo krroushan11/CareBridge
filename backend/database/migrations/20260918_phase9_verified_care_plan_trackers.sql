@@ -11,13 +11,21 @@ CREATE TABLE IF NOT EXISTS medication_tracker_records (
     instructions TEXT,
     source_text TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (verified_care_plan_id, medication_name,
-            COALESCE(dosage, ''), COALESCE(frequency, ''), COALESCE(route, ''), COALESCE(duration, ''))
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_medication_tracker_records_owner
     ON medication_tracker_records (user_id, document_id, created_at DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_medication_tracker_records_plan_signature
+    ON medication_tracker_records (
+        verified_care_plan_id,
+        medication_name,
+        COALESCE(dosage, ''),
+        COALESCE(frequency, ''),
+        COALESCE(route, ''),
+        COALESCE(duration, '')
+    );
 
 CREATE TABLE IF NOT EXISTS follow_up_tracker_records (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -30,10 +38,16 @@ CREATE TABLE IF NOT EXISTS follow_up_tracker_records (
     notes TEXT,
     source_text TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (verified_care_plan_id, follow_up_type,
-            COALESCE(scheduled_date, ''), COALESCE(status, ''))
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_follow_up_tracker_records_owner
     ON follow_up_tracker_records (user_id, document_id, created_at DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_follow_up_tracker_records_plan_signature
+    ON follow_up_tracker_records (
+        verified_care_plan_id,
+        follow_up_type,
+        COALESCE(scheduled_date, ''),
+        COALESCE(status, '')
+    );

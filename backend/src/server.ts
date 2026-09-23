@@ -19,10 +19,28 @@ import chatRoutes from "./routes/chatRoutes";
 
 dotenv.config();
 
+const validateProductionEnvironment = () => {
+  if (process.env.NODE_ENV !== "production") return;
+
+  const requiredVariables = [
+    "DB_HOST",
+    "DB_NAME",
+    "DB_USER",
+    "DB_PASSWORD",
+    "AI_API_KEY",
+  ];
+  const missingVariables = requiredVariables.filter((name) => !process.env[name]?.trim());
+
+  if (missingVariables.length > 0) {
+    throw new Error(`Missing required production environment variables: ${missingVariables.join(", ")}`);
+  }
+};
+
 try {
   validateJwtSecret();
+  validateProductionEnvironment();
 } catch (error) {
-  console.error("Authentication configuration error");
+  console.error("Production configuration validation failed");
   process.exit(1);
 }
 

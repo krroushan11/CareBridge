@@ -671,7 +671,28 @@ test("Gemini provider requests strict structured JSON and parses valid output", 
           properties: {
             medications: { type: "array", items: { type: ["string", "object"] } },
             findings: { type: "array", items: { type: "string" } },
-            tests: { type: "array", items: { type: ["string", "object"] } },
+            tests: {
+              type: "array",
+              items: {
+                anyOf: [
+                  { type: "string", minLength: 1, maxLength: 300 },
+                  {
+                    type: "object",
+                    properties: {
+                      name: { type: "string", minLength: 1, maxLength: 300 },
+                      result_or_value: { type: ["string", "null"], minLength: 1, maxLength: 300 },
+                      status: {
+                        type: ["string", "null"],
+                        enum: ["normal", "abnormal", "positive", "negative", "pending", "not_available", null],
+                      },
+                      source_text: { type: ["string", "null"], minLength: 1, maxLength: 300 },
+                    },
+                    required: ["name"],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+            },
             follow_up: { type: "array", items: { type: ["string", "object"] } },
             warnings: { type: "array", items: { type: "string" } },
             patient_summary: { type: "string" },

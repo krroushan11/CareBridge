@@ -68,11 +68,15 @@ const request = async (path, options = {}) => {
     ...options,
     headers: {
       "Content-Type": "application/json",
-      ...(token() ? { Authorization: `Bearer ${token()}` } : {}),
+      ...(token() ? { Authorization: "Bearer " + token() } : {}),
       ...(options.headers || {}),
     },
   });
   const body = await response.json().catch(() => ({}));
+  if (response.status === 401) {
+    localStorage.removeItem(tokenKey);
+    clearMedicationReminderTimer();
+  }
   if (!response.ok) throw new Error(body.message || "Request failed");
   return body;
 };
@@ -138,7 +142,87 @@ const logout = () => {
   renderAuth();
 };
 
+const shellRouteTargets = {
+  dashboard: "dashboard-home",
+  documents: "documents-page",
+  "care-plan": "care-plan-page",
+  medications: "medications-section",
+  "follow-ups": "follow-ups-section",
+  assistant: "assistant-section",
+  caregivers: "caregivers-section",
+  profile: "profile-page",
+  settings: "settings-page",
+};
+
+const updateShellRoute = (target = window.location.hash.slice(1) || "dashboard") => {
+  const shell = main.querySelector(".app-shell");
+  if (!shell) return;
+  const sectionId = shellRouteTargets[target] || shellRouteTargets.dashboard;
+  const section = document.getElementById(sectionId);
+  shell.querySelectorAll("[data-shell-nav]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.shellNav === target);
+  });
+  if (section && target !== "dashboard") section.scrollIntoView({ behavior: "smooth", block: "start" });
+};
+
+const navigateShell = (target) => {
+  if (!shellRouteTargets[target]) return;
+  const nextUrl = `${window.location.pathname}${window.location.search}#${target}`;
+  window.history.pushState({}, "", nextUrl);
+  renderApp();
+};
+
+window.addEventListener("popstate", () => updateShellRoute());
+window.addEventListener("hashchange", () => renderApp());
+
+const applyAuthenticatedShell = (active = "dashboard") => {
+  if (!token() || main.querySelector(".app-shell")) return;
+  const pageContent = document.createElement("div");
+  pageContent.className = "app-page-content";
+  while (main.firstChild) pageContent.append(main.firstChild);
+
+  const shell = document.createElement("div");
+  shell.className = "app-shell";
+  shell.innerHTML = `
+    <aside class="app-sidebar" aria-label="Primary navigation">
+      <div class="brand-mark"><span class="brand-symbol" aria-hidden="true">✦</span><div><strong>CareBridge AI</strong><small>Your Health, Organized.</small></div></div>
+      <nav class="shell-nav">
+        ${[
+          ["dashboard", "⌂", "Dashboard"],
+          ["documents", "▣", "My Documents"],
+          ["care-plan", "✓", "Care Plans"],
+          ["medications", "◉", "Medications"],
+          ["follow-ups", "◷", "Follow-ups & Tests"],
+          ["assistant", "✦", "AI Assistant"],
+          ["caregivers", "♧", "Family & Caregivers"],
+          ["profile", "◎", "Profile"],
+          ["settings", "⚙", "Settings"],
+        ].map(([key, icon, label]) => `<button class="shell-nav-item ${active === key ? "active" : ""}" data-shell-nav="${key}" type="button"><span aria-hidden="true">${icon}</span>${label}</button>`).join("")}
+      </nav>
+      <button class="shell-logout" id="shell-logout" type="button"><span aria-hidden="true">↪</span>Log out</button>
+    </aside>
+    <section class="app-workspace">
+      <header class="app-header">
+        <label class="shell-search"><span aria-hidden="true">⌕</span><input type="search" aria-label="Search documents, medications, or follow-ups" placeholder="Search documents, medications, or follow-ups..."></label>
+        <div class="header-actions"><button class="header-icon" type="button" aria-label="Notifications">♧</button><div class="patient-profile"><span class="patient-avatar">R</span><span><strong>Roushan</strong><small>Patient</small></span><span aria-hidden="true">⌄</span></div></div>
+      </header>
+      <div class="app-page-frame"></div>
+    </section>`;
+  shell.querySelector(".app-page-frame").append(pageContent);
+  main.replaceChildren(shell);
+  main.classList.add("shell-host");
+  shell.querySelector("#shell-logout").onclick = logout;
+  shell.querySelectorAll("[data-shell-nav]").forEach((button) => {
+    button.onclick = () => {
+      const target = button.dataset.shellNav;
+      if (shellRouteTargets[target]) return navigateShell(target);
+    };
+  });
+  updateShellRoute(window.location.hash.slice(1) || active);
+};
+
 const renderAuth = () => {
+  main.classList.remove("shell-host");
   main.innerHTML = `
     <section class="card auth-card">
       <h1>CareBridge AI</h1>
@@ -148,6 +232,7 @@ const renderAuth = () => {
         <label>Password <input required type="password" name="password" autocomplete="current-password"></label>
         <button>Sign in</button>
       </form>
+      <div class="actions"><button type="button" class="secondary" id="show-register">Create account</button><button type="button" class="secondary" id="show-forgot">Forgot password?</button></div>
       <p id="auth-message" class="message" role="alert"></p>
     </section>`;
   document.querySelector("#login-form").addEventListener("submit", async (event) => {
@@ -165,9 +250,59 @@ const renderAuth = () => {
       message.textContent = error.message;
     }
   });
+  document.querySelector("#show-register").onclick = renderRegister;
+  document.querySelector("#show-forgot").onclick = renderForgotPassword;
+};
+
+const authCard = (title, body) => {
+  main.classList.remove("shell-host");
+  main.innerHTML = `<section class="card auth-card"><h1>CareBridge AI</h1><h2>${title}</h2>${body}<p id="auth-message" class="message" role="alert"></p><button type="button" class="secondary" id="back-login">Back to sign in</button></section>`;
+  document.querySelector("#back-login").onclick = renderAuth;
+};
+
+const renderRegister = () => {
+  authCard("Create your account", `<form id="register-form"><label>Name <input required name="name" autocomplete="name"></label><label>Email <input required type="email" name="email" autocomplete="email"></label><label>Password <input required minlength="8" type="password" name="password" autocomplete="new-password"></label><button>Create account</button></form>`);
+  document.querySelector("#register-form").onsubmit = async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    try { await request("/api/auth/register", { method: "POST", body: JSON.stringify(Object.fromEntries(form)) }); renderAuth(); document.querySelector("#auth-message").textContent = "Account created. Please sign in."; document.querySelector("#auth-message").className = "message success"; }
+    catch (error) { document.querySelector("#auth-message").textContent = error.message; }
+  };
+};
+
+const renderForgotPassword = () => {
+  authCard("Reset your password", `<form id="forgot-form"><label>Email <input required type="email" name="email" autocomplete="email"></label><button>Send verification code</button></form>`);
+  document.querySelector("#forgot-form").onsubmit = async (event) => {
+    event.preventDefault();
+    const email = new FormData(event.currentTarget).get("email");
+    try { await request("/api/auth/forgot-password", { method: "POST", body: JSON.stringify({ email }) }); renderVerifyOtp(email); }
+    catch (error) { document.querySelector("#auth-message").textContent = error.message; }
+  };
+};
+
+const renderVerifyOtp = (email) => {
+  authCard("Verify your code", `<p class="muted">Enter the six-digit code sent to ${escapeHtml(email)}.</p><form id="otp-form"><label>Verification code <input required inputmode="numeric" pattern="[0-9]{6}" maxlength="6" name="otp"></label><button>Verify code</button></form>`);
+  document.querySelector("#otp-form").onsubmit = async (event) => {
+    event.preventDefault();
+    const otp = new FormData(event.currentTarget).get("otp");
+    try { const result = await request("/api/auth/verify-reset-otp", { method: "POST", body: JSON.stringify({ email, otp }) }); renderResetPassword(email, result.resetToken); }
+    catch (error) { document.querySelector("#auth-message").textContent = error.message; }
+  };
+};
+
+const renderResetPassword = (email, resetToken) => {
+  authCard("Choose a new password", `<form id="reset-form"><label>New password <input required minlength="8" type="password" name="newPassword" autocomplete="new-password"></label><label>Confirm password <input required minlength="8" type="password" name="confirmPassword" autocomplete="new-password"></label><button>Reset password</button></form>`);
+  document.querySelector("#reset-form").onsubmit = async (event) => {
+    event.preventDefault();
+    const values = Object.fromEntries(new FormData(event.currentTarget));
+    if (values.newPassword !== values.confirmPassword) { document.querySelector("#auth-message").textContent = "Passwords do not match."; return; }
+    try { await request("/api/auth/reset-password", { method: "POST", body: JSON.stringify({ email, newPassword: values.newPassword, resetToken }) }); renderAuth(); document.querySelector("#auth-message").textContent = "Password reset. Please sign in."; document.querySelector("#auth-message").className = "message success"; }
+    catch (error) { document.querySelector("#auth-message").textContent = error.message; }
+  };
 };
 
 const renderClinicianDashboard = async () => {
+  main.classList.remove("shell-host");
   main.innerHTML = `<section class="card loading">Loading clinician reviews…</section>`;
   try {
     const result = await request("/api/analysis/clinician/reviews");
@@ -181,6 +316,7 @@ const renderClinicianDashboard = async () => {
       try { await request(`/api/analysis/clinician/reviews/${id}`, { method: "PATCH", body: JSON.stringify({ status: button.dataset.status, clinician_note: note }) }); renderClinicianDashboard(); }
       catch (error) { window.alert(error.message); }
     });
+    applyAuthenticatedShell("settings");
   } catch (error) {
     main.innerHTML = `<section class="card"><p class="message">${escapeHtml(error.message)}</p></section>`;
   }
@@ -193,7 +329,7 @@ const renderPatientCaregiverSection = async () => {
   try {
     const result = await request("/api/caregivers");
     const relationships = result.relationships || [];
-    return `<section class="card"><h2>Family & caregiver access</h2>
+    return `<section class="card" id="caregivers-section"><h2>Family & caregiver access</h2>
       <form id="caregiver-invite-form"><label>Caregiver email <input required type="email" name="caregiver_email" autocomplete="email"></label>
       <fieldset><legend>Initial permissions</legend>${caregiverPermissionFields(["view_care_plan", "view_tasks", "view_follow_ups", "view_medical_tests", "view_medications"])}</fieldset>
       <button>Send invitation</button><p id="caregiver-invite-message" class="message" role="alert"></p></form>
@@ -214,7 +350,7 @@ const renderChatSection = async () => {
   const messages = history.flatMap((conversation) => conversation.messages || []).slice(-8);
   const selectedLanguage = isChatLanguage(sessionStorage.getItem(chatLanguageKey)) ? sessionStorage.getItem(chatLanguageKey) : "en";
   const simplify = sessionStorage.getItem(chatSimplifyKey) === "true";
-  return `<section class="card"><h2>Verified care assistant</h2>
+  return `<section class="card" id="assistant-section"><h2>Verified care assistant</h2>
     <p class="disclaimer">Answers use only your verified care information. This is not a diagnosis or a replacement for a clinician. For emergencies, contact local emergency services.</p>
     <div class="data-card">${messages.length ? messages.map((item) => `<p><strong>${item.role === "user" ? "You" : "CareBridge"}:</strong> ${escapeHtml(item.content)}</p>`).join("") : "<p class=\"muted\">Ask a question about your verified care information.</p>"}</div>
     <form id="chat-form"><div class="filter-row"><label for="chat-language">Language <select id="chat-language" name="language">${CHAT_LANGUAGES.filter((item) => item.enabled).map((item) => `<option value="${item.code}" ${item.code === selectedLanguage ? "selected" : ""}>${item.displayName}</option>`).join("")}</select></label><label for="chat-simplify"><input id="chat-simplify" type="checkbox" ${simplify ? "checked" : ""}> Plain-language explanation</label></div><label for="chat-question">Question <textarea id="chat-question" required name="message" form="chat-form" rows="3" maxlength="4000" placeholder="What does my verified care plan say about my follow-up?"></textarea></label><button type="submit" form="chat-form">Ask CareBridge</button><p id="chat-message" class="message" role="alert"></p></form>
@@ -226,6 +362,7 @@ const tokenUserId = () => {
 };
 
 const renderCaregiverDashboard = async () => {
+  main.classList.remove("shell-host");
   main.innerHTML = `<section class="card loading" aria-live="polite">Loading caregiver dashboard…</section>`;
   try {
     const result = await request("/api/caregivers");
@@ -263,6 +400,7 @@ const renderCaregiverDashboard = async () => {
         resource.innerHTML = `<p class="message">${escapeHtml(error.message || "Unable to load shared care information")}</p>`;
       }
     }
+    applyAuthenticatedShell("caregivers");
   } catch (error) {
     main.innerHTML = `<section class="card"><h1>Unable to load caregiver dashboard</h1><p class="message">${escapeHtml(error.message)}</p><button id="retry">Try again</button></section>`;
     document.querySelector("#retry").onclick = renderCaregiverDashboard;
@@ -351,7 +489,7 @@ const renderTrackingSections = (followUps, medicalTests, followUpFilterState, te
   <section class="card"><h2>Upcoming actions (next 14 days)</h2>
     ${upcoming.length ? `<ul>${upcoming.map((item) => `<li><strong>${escapeHtml(item.title || item.test_name)}</strong> — ${formatTrackingDate(effectiveDate(item))}${item.appointment_time ? ` at ${escapeHtml(String(item.appointment_time).slice(0, 5))}` : ""} <span class="badge ${statusBadgeClass(item.status)}">${escapeHtml(item.status)}</span></li>`).join("")}</ul>` : "<p>No upcoming follow-ups or tests in the next 14 days.</p>"}
   </section>
-  <section class="card"><h2>Follow-ups</h2>
+  <section class="card" id="follow-ups-section"><h2>Follow-ups</h2>
     ${filterControls("follow_up", followUpFilterState, FOLLOW_UP_STATUSES)}
     <form id="followup-form"><div class="data-grid">
       <label>Title <input required name="title" maxlength="255" placeholder="e.g. Follow up with cardiology"></label>
@@ -380,7 +518,7 @@ const renderTrackingSections = (followUps, medicalTests, followUpFilterState, te
 
 const sectionCard = (title, body, className = "card") => `<section class="${className}"><h2>${escapeHtml(title)}</h2>${body}</section>`;
 const medicationMetricCard = (title, value, subtext = "") => `
-  <article class="data-card">
+  <article class="data-card stat-card">
     <p class="muted">${escapeHtml(title)}</p>
     <h3>${escapeHtml(value)}</h3>
     ${subtext ? `<p class="muted">${escapeHtml(subtext)}</p>` : ""}
@@ -388,6 +526,7 @@ const medicationMetricCard = (title, value, subtext = "") => `
 
 const renderMedicationDashboard = async () => {
   clearMedicationReminderTimer();
+  main.classList.remove("shell-host");
   main.innerHTML = `<section class="card loading" aria-live="polite">Loading care management dashboard…</section>`;
   const requestCache = new Map();
   const cachedRequest = (path) => {
@@ -407,7 +546,7 @@ const renderMedicationDashboard = async () => {
       const upcoming = schedule.filter((dose) => medicationDoseStatus(dose) !== "completed" && medicationDoseStatus(dose) !== "missed").slice(0, 8);
       const summary = aggregateMedicationAdherence(medications);
       return `
-        <section class="card">
+        <section class="card" id="medications-section">
           <h2>Medication dashboard</h2>
           <div class="data-grid">
             ${medicationMetricCard("Active medications", String(summary.totalMedications), "Current active medication list")}
@@ -513,10 +652,27 @@ const renderMedicationDashboard = async () => {
       medicalTests: (await cachedRequest(medicalTestsPath())).medical_tests || [],
     });
     const summaryState = summary || defaultSummary;
+    const documents = await cachedRequest("/api/documents").then((result) => result.documents || []).catch(() => []);
+    const recentDocuments = documents.slice(0, 4);
+    const upcomingItems = [
+      summaryState.nextMedicalTest && { icon: "▣", title: summaryState.nextMedicalTest.test_name, date: effectiveDate(summaryState.nextMedicalTest), type: "Medical test" },
+      summaryState.nextFollowUp && { icon: "◷", title: summaryState.nextFollowUp.title, date: effectiveDate(summaryState.nextFollowUp), type: "Follow-up" },
+      summaryState.nextMedication && { icon: "◉", title: medicationLabel(summaryState.nextMedication), date: summaryState.nextMedication.scheduled_at?.slice(0, 10), type: "Medication" },
+    ].filter(Boolean);
     main.innerHTML = `
-      <header class="topbar"><h1>Care management dashboard</h1><button id="logout">Sign out</button></header>
-      <section class="card disclaimer"><strong>Care summary</strong><p>Medication adherence ${summaryState.medication.adherencePercentage ?? 0}% • Next medication ${summaryState.nextMedication ? escapeHtml(medicationLabel(summaryState.nextMedication)) : "Not scheduled"} • Next follow-up ${summaryState.nextFollowUp ? escapeHtml(summaryState.nextFollowUp.title) : "Not scheduled"} • Pending recovery tasks ${summaryState.pendingRecoveryTasks}</p></section>
-      <section class="card"><h2>Unified care overview</h2><div class="data-grid">${medicationMetricCard("Medication adherence", `${summaryState.medication.adherencePercentage}%`, "Completed divided by scheduled doses")}${medicationMetricCard("Next medication", summaryState.nextMedication ? escapeHtml(medicationLabel(summaryState.nextMedication)) : "Not scheduled", "Next dose in the active schedule")}${medicationMetricCard("Next follow-up", summaryState.nextFollowUp ? escapeHtml(summaryState.nextFollowUp.title) : "No upcoming follow-up", "Next active follow-up")}${medicationMetricCard("Next medical test", summaryState.nextMedicalTest ? escapeHtml(summaryState.nextMedicalTest.test_name) : "No upcoming test", "Next pending or scheduled test")}${medicationMetricCard("Pending recovery tasks", String(summaryState.pendingRecoveryTasks), "Open tasks requiring attention")}</div></section>
+      <section class="dashboard-welcome" id="dashboard-home"><div><h2>Welcome back, ${escapeHtml((tokenUserId() && "Roushan") || "there")}!</h2><p>Your health journey, organized with AI.</p></div><div class="welcome-motto"><span aria-hidden="true">♨</span><em>Better information.<br>A healthier tomorrow.</em></div></section>
+      <section class="dashboard-stats">
+        <article class="card dashboard-stat"><span class="stat-icon">▣</span><h3>${documents.length}</h3><p class="muted">Documents<br><small>${documents.filter((item) => item.processing_status === "processed").length} processed</small></p></article>
+        <article class="card dashboard-stat"><span class="stat-icon">◉</span><h3>${summaryState.medication.totalMedications ?? 0}</h3><p class="muted">Medications<br><small class="chip-alert">${summaryState.medication.missedDoses ?? 0} due today</small></p></article>
+        <article class="card dashboard-stat"><span class="stat-icon">◷</span><h3>${(summaryState.nextFollowUp ? 1 : 0) + (summaryState.nextMedicalTest ? 1 : 0)}</h3><p class="muted">Follow-ups<br><small>Upcoming</small></p></article>
+        <article class="card dashboard-stat"><span class="stat-icon">✓</span><h3>${summaryState.medication.adherencePercentage ?? 0}%</h3><p class="muted">Care Plans<br><small>Verified</small></p></article>
+      </section>
+      <section class="dashboard-columns">
+        <section class="card"><div class="card-heading"><h2>Recent Documents</h2><a class="dashboard-link" href="#documents">View All</a></div><div class="dashboard-list">${recentDocuments.length ? recentDocuments.map((item) => `<div class="dashboard-list-item"><span class="dashboard-list-icon">▣</span><div class="dashboard-list-copy"><strong>${escapeHtml(item.original_filename || item.title || "Medical document")}</strong><small>${escapeHtml(item.document_type || "Medical record")} · ${formatTrackingDate(item.created_at || item.uploaded_at)}</small></div><span class="badge ${item.processing_status === "processed" ? "badge-completed" : "badge-pending"}">${escapeHtml(item.processing_status || "Processing")}</span></div>`).join("") : `<p class="muted">No documents uploaded yet.</p>`}</div></section>
+        <section class="card"><div class="card-heading"><h2>Upcoming Tasks</h2><a class="dashboard-link" href="#follow-ups">View All</a></div><div class="dashboard-list">${upcomingItems.length ? upcomingItems.map((item) => `<div class="dashboard-list-item"><span class="dashboard-list-icon">${item.icon}</span><div class="dashboard-list-copy"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.type)} · ${escapeHtml(formatTrackingDate(item.date))}</small></div><span class="badge badge-scheduled">Upcoming</span></div>`).join("") : `<p class="muted">No upcoming tasks.</p>`}</div></section>
+        <section class="card"><div class="card-heading"><h2>AI Assistant</h2><span class="stat-icon">✦</span></div><p class="muted">Ask questions about your reports, medications, or care plan.</p><div class="assistant-prompt">What are my recent test results?</div><button class="dashboard-chat-button" type="button" data-shell-nav="assistant">Chat with AI →</button></section>
+      </section>
+      <section class="card disclaimer"><strong>Care summary</strong><p>Medication adherence ${summaryState.medication.adherencePercentage ?? 0}% • Next medication ${summaryState.nextMedication ? escapeHtml(medicationLabel(summaryState.nextMedication)) : "Not scheduled"} • Pending recovery tasks ${summaryState.pendingRecoveryTasks}</p></section>
       <section class="card"><h2>Reminders</h2><p class="muted">This page checks due doses while it is open. Browser notifications require your permission and may be blocked by your browser or device.</p><div class="actions"><button class="secondary" id="enable-reminders" ${reminderPermission === "granted" || reminderPermission === "unsupported" ? "disabled" : ""}>${reminderPermission === "granted" ? "Notifications enabled" : reminderPermission === "unsupported" ? "Notifications unavailable" : "Enable browser notifications"}</button><button class="secondary" id="enable-reminder-sound">${soundEnabled ? "Reminder sound enabled" : "Enable Reminder Sound"}</button><button class="secondary" id="test-reminder-sound">Test Reminder Sound</button><button class="secondary" id="mute-reminders">Mute reminders for this page</button></div><p id="reminder-message" class="message" role="status"></p></section>
       ${medicationHtml}
       ${followUpHtml}
@@ -536,10 +692,14 @@ const renderMedicationDashboard = async () => {
       )}
     `;
 
-    document.querySelector("#logout").onclick = logout;
-    document.querySelector("#chat-form").onsubmit = createChatSubmitHandler({ request });
-    document.querySelector("#chat-language").onchange = (event) => sessionStorage.setItem(chatLanguageKey, event.currentTarget.value);
-    document.querySelector("#chat-simplify").onchange = (event) => sessionStorage.setItem(chatSimplifyKey, String(event.currentTarget.checked));
+    const logoutButton = document.querySelector("#logout");
+    if (logoutButton) logoutButton.onclick = logout;
+    const chatForm = document.querySelector("#chat-form");
+    if (chatForm) chatForm.onsubmit = createChatSubmitHandler({ request });
+    const chatLanguage = document.querySelector("#chat-language");
+    if (chatLanguage) chatLanguage.onchange = (event) => sessionStorage.setItem(chatLanguageKey, event.currentTarget.value);
+    const chatSimplify = document.querySelector("#chat-simplify");
+    if (chatSimplify) chatSimplify.onchange = (event) => sessionStorage.setItem(chatSimplifyKey, String(event.currentTarget.checked));
     const inviteForm = document.querySelector("#caregiver-invite-form");
     if (inviteForm) inviteForm.onsubmit = async (event) => {
       event.preventDefault();
@@ -581,7 +741,8 @@ const renderMedicationDashboard = async () => {
       renderMedicationDashboard();
     });
 
-    document.querySelector("#enable-reminders").onclick = async () => {
+    const enableReminders = document.querySelector("#enable-reminders");
+    if (enableReminders) enableReminders.onclick = async () => {
       const message = document.querySelector("#reminder-message");
       if (!("Notification" in window) || !shouldRequestNotificationPermission(Notification.permission)) return;
       const permission = await Notification.requestPermission();
@@ -596,7 +757,8 @@ const renderMedicationDashboard = async () => {
         message.textContent = `Browser notifications enabled for this page, but push setup failed: ${error.message || "configuration unavailable"}`;
       }
     };
-    document.querySelector("#enable-reminder-sound").onclick = async () => {
+    const enableReminderSound = document.querySelector("#enable-reminder-sound");
+    if (enableReminderSound) enableReminderSound.onclick = async () => {
       const message = document.querySelector("#reminder-message");
       try {
         const unlocked = await unlockReminderSound();
@@ -604,14 +766,16 @@ const renderMedicationDashboard = async () => {
         if (unlocked) document.querySelector("#enable-reminder-sound").textContent = "Reminder sound enabled";
       } catch { message.textContent = "Reminder sound could not be enabled. Try again after interacting with the page."; }
     };
-    document.querySelector("#test-reminder-sound").onclick = async () => {
+    const testReminderSound = document.querySelector("#test-reminder-sound");
+    if (testReminderSound) testReminderSound.onclick = async () => {
       const message = document.querySelector("#reminder-message");
       try {
         const unlocked = await unlockReminderSound();
         message.textContent = unlocked && playReminderSound() ? "Reminder sound played." : "Reminder sound is not supported by this browser.";
       } catch { message.textContent = "Reminder sound could not be played."; }
     };
-    document.querySelector("#mute-reminders").onclick = () => { reminderMuted = true; document.querySelector("#reminder-message").textContent = "Reminders muted until this dashboard is reloaded."; };
+    const muteReminders = document.querySelector("#mute-reminders");
+    if (muteReminders) muteReminders.onclick = () => { reminderMuted = true; document.querySelector("#reminder-message").textContent = "Reminders muted until this dashboard is reloaded."; };
 
     const pollGeneration = reminderPollGeneration;
     const medicationNotification = async () => {
@@ -636,6 +800,9 @@ const renderMedicationDashboard = async () => {
     };
     medicationNotification();
     medicationReminderTimer = window.setInterval(medicationNotification, 60_000);
+    applyAuthenticatedShell("dashboard");
+    const dashboardAssistantButton = document.querySelector(".dashboard-chat-button");
+    if (dashboardAssistantButton) dashboardAssistantButton.onclick = () => navigateShell("assistant");
   } catch (error) {
     clearMedicationReminderTimer();
     main.innerHTML = `<section class="card"><h1>Unable to load care management dashboard</h1><p class="message">${escapeHtml(error.message)}</p><button id="retry">Try again</button></section>`;
@@ -667,8 +834,14 @@ const renderApp = async () => {
   if (!documentId()) {
     if (role() === "doctor") return renderClinicianDashboard();
     if (role() === "caregiver") return renderCaregiverDashboard();
+    const route = window.location.hash.slice(1) || "dashboard";
+    if (route === "documents") return renderDocuments();
+    if (route === "care-plan") return renderCarePlan();
+    if (route === "profile") return renderProfile();
+    if (route === "settings") return renderSettings();
     return renderMedicationDashboard();
   }
+  main.classList.remove("shell-host");
   main.innerHTML = `<section class="card loading" aria-live="polite">Loading secure review…</section>`;
   try {
     const [review, versions, audit] = await Promise.all([
@@ -701,6 +874,8 @@ const renderApp = async () => {
       <section class="card"><h2>Review / audit history</h2><div>${audit.events.length ? audit.events.map((event) => `<p><strong>${escapeHtml(event.action)}</strong> — ${new Date(event.created_at).toLocaleString()}</p>`).join("") : "<p>No review events yet.</p>"}</div></section>
       <section class="card"><h2>Optional clinician review</h2><p>A clinician must be an authorized doctor account. AI output is never automatically clinician-approved.</p><form id="clinician-form"><label>Clinician ID <input required name="clinician_id"></label><label>Note <textarea name="patient_note" rows="2"></textarea></label><button class="secondary">Submit for clinician review</button></form><p id="clinician-message" class="message" role="alert"></p></section>`;
     bindReviewHandlers(review);
+      bindReviewConfirmationHandlers();
+      applyAuthenticatedShell("documents");
   } catch (error) {
     main.innerHTML = `<section class="card"><h1>Unable to load review</h1><p class="message">${escapeHtml(error.message)}</p><button id="retry">Try again</button></section>`;
     document.querySelector("#retry").onclick = renderApp;
@@ -735,6 +910,101 @@ const bindReviewHandlers = (review) => {
       message.className = "message";
     }
   };
+
+};
+
+const renderShellPage = (html, active) => {
+    const shell = main.querySelector(".app-shell");
+    if (shell) {
+      shell.querySelector(".app-page-frame").innerHTML = html;
+      updateShellRoute(active);
+    } else {
+      main.innerHTML = html;
+      applyAuthenticatedShell(active);
+    }
+  };
+
+const renderDocuments = async () => {
+    renderShellPage(`<section class="card loading">Loading documents…</section>`, "documents");
+    try {
+      const result = await request("/api/documents");
+      const documents = result.documents || [];
+      renderShellPage(`<section id="documents-page" class="card"><div class="card-heading"><div><h1>My Documents</h1><p class="muted">Upload and manage your medical records securely.</p></div><button id="refresh-documents" class="secondary">Refresh</button></div>
+        <form id="document-upload-form" class="upload-zone"><label>Choose a medical document (PDF, JPEG, or PNG, up to 10 MB)<input id="document-file" required type="file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"></label><p class="muted">You can also drag and drop a file here.</p><button type="submit">Upload document</button><progress id="upload-progress" max="100" value="0" hidden></progress><p id="documents-message" class="message" role="alert"></p></form>
+        <div id="document-list" class="data-grid">${documents.length ? documents.map(documentCard).join("") : "<p class=\"muted\">No documents uploaded yet.</p>"}</div></section>`, "documents");
+      bindDocumentHandlers();
+    } catch (error) { renderShellPage(`<section id="documents-page" class="card"><h1>My Documents</h1><p class="message">${escapeHtml(error.message)}</p><button id="retry-documents">Retry</button></section>`, "documents"); document.querySelector("#retry-documents").onclick = renderDocuments; }
+  };
+
+const documentCard = (item) => `<article class="data-card"><h3>${escapeHtml(item.original_filename)}</h3><p class="muted">${escapeHtml(item.mime_type || "Medical record")} · ${item.file_size ? `${Math.round(item.file_size / 1024)} KB` : ""}</p><p><span class="badge ${item.processing_status === "processed" ? "badge-completed" : item.processing_status === "failed" ? "badge-missed" : "badge-pending"}">${escapeHtml(item.processing_status || "uploaded")}</span></p>${item.processing_error ? `<p class="message">${escapeHtml(item.processing_error)}</p>` : ""}<div class="actions"><button class="secondary" data-download-document="${item.id}">Download</button><button class="secondary" data-delete-document="${item.id}">Delete</button>${item.processing_status === "processed" ? `<a class="dashboard-link" href="?document=${encodeURIComponent(item.id)}">Review analysis</a>` : ""}</div></article>`;
+
+const bindDocumentHandlers = () => {
+    document.querySelector("#refresh-documents").onclick = renderDocuments;
+    const form = document.querySelector("#document-upload-form");
+    const fileInput = document.querySelector("#document-file");
+    const zone = form;
+    ["dragenter", "dragover"].forEach((eventName) => zone.addEventListener(eventName, (event) => { event.preventDefault(); zone.classList.add("dragging"); }));
+    ["dragleave", "drop"].forEach((eventName) => zone.addEventListener(eventName, (event) => { event.preventDefault(); zone.classList.remove("dragging"); if (eventName === "drop" && event.dataTransfer.files.length) { fileInput.files = event.dataTransfer.files; } }));
+    form.onsubmit = (event) => {
+      event.preventDefault();
+      const file = fileInput.files[0];
+      const message = document.querySelector("#documents-message");
+      if (!file) return;
+      const submitButton = form.querySelector("button[type=\"submit\"]");
+      if (submitButton.disabled) return;
+      submitButton.disabled = true;
+      const data = new FormData(); data.append("document", file);
+      const xhr = new XMLHttpRequest(); xhr.open("POST", `${apiBaseUrl}/api/documents/upload`); xhr.setRequestHeader("Authorization", `Bearer ${token()}`);
+      const progress = document.querySelector("#upload-progress"); progress.hidden = false;
+      xhr.upload.onprogress = (event) => { if (event.lengthComputable) progress.value = Math.round((event.loaded / event.total) * 100); };
+      xhr.onload = () => { submitButton.disabled = false; if (xhr.status >= 200 && xhr.status < 300) { message.textContent = "Document uploaded. Processing will continue in the background."; message.className = "message success"; renderDocuments(); } else { try { message.textContent = JSON.parse(xhr.responseText).message; } catch { message.textContent = "Upload failed."; } } };
+      xhr.onerror = () => { submitButton.disabled = false; message.textContent = "Upload failed. Check your connection."; };
+      xhr.send(data);
+    };
+    document.querySelectorAll("[data-download-document]").forEach((button) => button.onclick = async () => {
+      try { const response = await fetch(`${apiBaseUrl}/api/documents/${button.dataset.downloadDocument}/download`, { headers: { Authorization: `Bearer ${token()}` } }); if (!response.ok) throw new Error("Download failed"); const blob = await response.blob(); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = "medical-document"; link.click(); URL.revokeObjectURL(url); } catch (error) { window.alert(error.message); }
+    });
+    document.querySelectorAll("[data-delete-document]").forEach((button) => button.onclick = async () => {
+      if (!window.confirm("Delete this document?")) return;
+      try { await request(`/api/documents/${button.dataset.deleteDocument}`, { method: "DELETE" }); renderDocuments(); } catch (error) { window.alert(error.message); }
+    });
+  };
+
+const renderCarePlan = async () => {
+    renderShellPage(`<section class="card loading">Loading care plans…</section>`, "care-plan");
+    try {
+      const documents = (await request("/api/documents")).documents || [];
+      const plans = await Promise.all(documents.map(async (document) => {
+        try {
+          const result = await request(`/api/analysis/${document.id}/verified-care-plan`);
+          const versions = await request(`/api/analysis/${document.id}/verified-care-plan/versions`).catch(() => ({ versions: [] }));
+          return { document, plan: result.plan, versions: versions.versions || [] };
+        } catch { return { document, plan: null, versions: [] }; }
+      }));
+      renderShellPage(`<section id="care-plan-page" class="card"><h1>Care Plans</h1><p class="muted">Verified plans are generated from reviewed document analysis.</p>${plans.length ? `<div class="data-grid">${plans.map(({ document, plan, versions }) => `<article class="data-card"><h3>${escapeHtml(document.original_filename)}</h3>${plan ? `<p><span class="badge badge-completed">${escapeHtml(plan.verification_status || "verified")}</span> · Version ${escapeHtml(plan.version_number)}</p><p>Confirmed ${escapeHtml(formatTrackingDate(plan.confirmation_timestamp || plan.updated_at))}</p><pre>${escapeHtml(formatJson(plan.verified_extraction))}</pre><details><summary>Version history (${versions.length})</summary>${versions.length ? versions.map((version) => `<p>Version ${escapeHtml(version.version_number)}${version.is_current ? " · current" : ""} · ${escapeHtml(version.confirmed_at || version.created_at || "Date unavailable")}</p>`).join("") : "<p>No version history available.</p>"}</details>` : "<p class=\"muted\">No verified care plan yet.</p>"}<a class="dashboard-link" href="?document=${encodeURIComponent(document.id)}">Open analysis</a></article>`).join("")}</div>` : "<p>No documents available. Upload a record to get started.</p>"}</section>`, "care-plan");
+    } catch (error) { renderShellPage(`<section id="care-plan-page" class="card"><h1>Care Plans</h1><p class="message">${escapeHtml(error.message)}</p></section>`, "care-plan"); }
+  };
+
+const renderProfile = async () => {
+    renderShellPage(`<section class="card loading">Loading profile…</section>`, "profile");
+    try {
+      const result = await request("/api/auth/profile");
+      const user = result.user || {};
+      renderShellPage(`<section id="profile-page" class="card"><h1>Profile</h1><form id="profile-form"><label>Name <input required name="name" value="${escapeHtml(user.name)}"></label><label>Email <input required type="email" name="email" value="${escapeHtml(user.email)}"></label><p class="muted">Role: ${escapeHtml(user.role || "patient")}</p><button>Save changes</button><p id="profile-message" class="message" role="alert"></p></form><hr><h2>Change password</h2><form id="password-form"><label>Current password <input required type="password" name="currentPassword" autocomplete="current-password"></label><label>New password <input required minlength="8" type="password" name="newPassword" autocomplete="new-password"></label><button>Update password</button><p id="password-message" class="message" role="alert"></p></form></section>`, "profile");
+      document.querySelector("#profile-form").onsubmit = async (event) => { event.preventDefault(); const message = document.querySelector("#profile-message"); try { const updated = await request("/api/auth/profile", { method: "PUT", body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) }); message.textContent = updated.message || "Profile updated."; message.className = "message success"; } catch (error) { message.textContent = error.message; } };
+      document.querySelector("#password-form").onsubmit = async (event) => { event.preventDefault(); const message = document.querySelector("#password-message"); try { await request("/api/auth/change-password", { method: "PUT", body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) }); event.currentTarget.reset(); message.textContent = "Password updated successfully."; message.className = "message success"; } catch (error) { message.textContent = error.message; } };
+    } catch (error) { renderShellPage(`<section id="profile-page" class="card"><h1>Profile</h1><p class="message">${escapeHtml(error.message)}</p></section>`, "profile"); }
+  };
+
+const renderSettings = () => {
+    const notifications = localStorage.getItem("carebridge_notifications") !== "false";
+    const reminders = localStorage.getItem("carebridge_reminders") !== "false";
+  const simplify = sessionStorage.getItem(chatSimplifyKey) === "true";
+  const language = sessionStorage.getItem(chatLanguageKey) || "en";
+  renderShellPage(`<section id="settings-page" class="card"><h1>Settings</h1><form id="settings-form"><label><input type="checkbox" name="notifications" ${notifications ? "checked" : ""}> Browser notifications</label><label><input type="checkbox" name="reminders" ${reminders ? "checked" : ""}> Medication reminders</label><label><input type="checkbox" name="simplify" ${simplify ? "checked" : ""}> Plain-language assistant responses</label><label>Preferred language <select name="language"><option value="en" ${language === "en" ? "selected" : ""}>English</option><option value="es" ${language === "es" ? "selected" : ""}>Español</option><option value="fr" ${language === "fr" ? "selected" : ""}>Français</option></select></label><button>Save preferences</button><p id="settings-message" class="message" role="alert"></p></form></section>`, "settings");
+  document.querySelector("#settings-form").onsubmit = (event) => { event.preventDefault(); const values = Object.fromEntries(new FormData(event.currentTarget)); localStorage.setItem("carebridge_notifications", String(Boolean(values.notifications))); localStorage.setItem("carebridge_reminders", String(Boolean(values.reminders))); sessionStorage.setItem(chatLanguageKey, values.language); sessionStorage.setItem(chatSimplifyKey, String(Boolean(values.simplify))); document.querySelector("#settings-message").textContent = "Preferences saved on this device."; document.querySelector("#settings-message").className = "message success"; };
+};
+const bindReviewConfirmationHandlers = () => {
   document.querySelector("#confirm").onclick = async () => {
     const message = document.querySelector("#confirm-message");
     try {

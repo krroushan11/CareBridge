@@ -23,12 +23,36 @@ const extractionInstruction = [
   "Preserve uncertainty and qualifiers from the document.",
 ].join(" ");
 
+const boundedTextSchema = {
+  type: "string",
+  minLength: 1,
+  maxLength: 300,
+} as const;
+
+const testRecordResponseSchema = {
+  type: "object",
+  properties: {
+    name: boundedTextSchema,
+    result_or_value: { type: ["string", "null"], minLength: 1, maxLength: 300 },
+    status: {
+      type: ["string", "null"],
+      enum: ["normal", "abnormal", "positive", "negative", "pending", "not_available", null],
+    },
+    source_text: { type: ["string", "null"], minLength: 1, maxLength: 300 },
+  },
+  required: ["name"],
+  additionalProperties: false,
+} as const;
+
 const extractionResponseSchema = {
   type: "object",
   properties: {
     medications: { type: "array", items: { type: ["string", "object"] } },
     findings: { type: "array", items: { type: "string" } },
-    tests: { type: "array", items: { type: ["string", "object"] } },
+    tests: {
+      type: "array",
+      items: { anyOf: [boundedTextSchema, testRecordResponseSchema] },
+    },
     follow_up: { type: "array", items: { type: ["string", "object"] } },
     warnings: { type: "array", items: { type: "string" } },
     patient_summary: { type: "string" },

@@ -22,7 +22,9 @@ export const effectiveDate = (record) => record?.appointment_date || record?.due
 
 export const isOverdue = (record, now = new Date()) => {
   const date = effectiveDate(record);
-  if (!date || TERMINAL_STATUSES.has(record?.status) || record?.status === "missed") return false;
+  // A scheduled item is an appointment that has been arranged, not an
+  // outstanding task. Keep it out of the overdue count until it is pending.
+  if (!date || TERMINAL_STATUSES.has(record?.status) || record?.status === "missed" || record?.status === "scheduled") return false;
   const endOfDay = new Date(`${String(date).slice(0, 10)}T23:59:59.999Z`);
   return !Number.isNaN(endOfDay.getTime()) && endOfDay.getTime() < now.getTime();
 };

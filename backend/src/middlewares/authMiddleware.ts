@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction, RequestHandler } from "express";
 import jwt from "jsonwebtoken";
+import { pool } from "../config/database";
 
 export const USER_ROLES = ["patient", "caregiver", "doctor", "admin"] as const;
 export type UserRole = (typeof USER_ROLES)[number];
@@ -35,7 +36,7 @@ export const validateJwtSecret = (): void => {
   }
 };
 
-export const authenticateToken = (
+export const authenticateToken = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction
@@ -83,10 +84,28 @@ export const authenticateToken = (
       });
     }
 
+    const userResult = await pool.query(
+      "SELECT id, email, role FROM users WHERE id = $1",
+      [decoded.id]
+    );
+    const currentUser = userResult.rows[0];
+
+    if (
+      !currentUser ||
+      typeof currentUser.id !== "string" ||
+      typeof currentUser.email !== "string" ||
+      !isUserRole(currentUser.role)
+    ) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid or inactive user",
+      });
+    }
+
     req.user = {
-      id: decoded.id,
-      email: decoded.email,
-      role: decoded.role,
+      id: currentUser.id,
+      email: currentUser.email,
+      role: currentUser.role,
     };
 
     next();

@@ -255,23 +255,54 @@ test("admin role updates validate roles and return safe user data", async () => 
   assert.equal(invalidRes.statusCode, 400);
 });
 
-test("JWT role is taken from the signed token, not the request body", () => {
+test("JWT role is refreshed from the current database user, not the request body", async () => {
   process.env.JWT_SECRET = "test-jwt-secret";
   const token = jwt.sign(
     { id: "user-a", email: "patient@example.com", role: "patient" },
     process.env.JWT_SECRET
   );
+  setQueryMock(async () => ({
+    rows: [{ id: "user-a", email: "patient@example.com", role: "patient" }],
+  }));
   const req: any = {
     headers: { authorization: `Bearer ${token}` },
     body: { role: "admin" },
   };
   const res = createResponse();
-  authenticateToken(req, res, () => undefined);
+  await authenticateToken(req, res, () => undefined);
 
   assert.equal(req.user.role, "patient");
 });
 
-test("JWTs with an unsupported role are rejected", () => {
+test("an old elevated JWT loses access after the database role changes", async () => {
+  process.env.JWT_SECRET = "test-jwt-secret";
+  const token = jwt.sign(
+    { id: "user-a", email: "patient@example.com", role: "admin" },
+    process.env.JWT_SECRET
+  );
+  setQueryMock(async () => ({
+    rows: [{ id: "user-a", email: "patient@example.com", role: "patient" }],
+  }));
+  const req: any = {
+    headers: { authorization: `Bearer ${token}` },
+  };
+  const res = createResponse();
+  let nextCalled = false;
+
+  await authenticateToken(req, res, () => {
+    nextCalled = true;
+  });
+
+  assert.equal(nextCalled, true);
+  assert.equal(req.user.role, "patient");
+  const denied = createResponse();
+  requireRole("admin")(req, denied, () => {
+    throw new Error("next must not be called");
+  });
+  assert.equal(denied.statusCode, 403);
+});
+
+test("JWTs with an unsupported role are rejected", async () => {
   process.env.JWT_SECRET = "test-jwt-secret";
   const token = jwt.sign(
     { id: "user-a", email: "patient@example.com", role: "superuser" },
@@ -279,7 +310,7 @@ test("JWTs with an unsupported role are rejected", () => {
   );
   const res = createResponse();
 
-  authenticateToken({
+  await authenticateToken({
     headers: { authorization: `Bearer ${token}` },
   } as any, res, () => {
     throw new Error("next must not be called");
